@@ -30,7 +30,7 @@ ad_grid_m = ti.field(ti.f32, shape=(level, finest_size+1, finest_size+1))
 @ti.kernel
 def initialize_mask():
   for i, j in ti.ndrange(finest_size, finest_size):
-    if j >= finest_size / 2:
+    if i >= finest_size / 2:
       active_cell_mask[0, i // 2, j // 2] = ACTIVATED
     else:
       active_cell_mask[1, i, j] = ACTIVATED
@@ -56,16 +56,16 @@ def accumulate_mask(l : ti.template()):
     if active_cell_mask[l, i,j] == ACTIVATED:
       for di,dj in ti.ndrange(2, 2):
         I_ = _map(l, vec2(i+di,j+dj))
-        active_node_mask[I_] |= REAL
-        if i+di==0: active_node_mask[I_] |= LEFT
-        if i+di==l_size: active_node_mask[I_] |= RIGHT
-        if j+dj==0: active_node_mask[I_] |= UP
-        if j+dj==l_size: active_node_mask[I_] |= DOWN
+        ti.atomic_or(active_node_mask[I_], REAL)
+        if i+di==0: ti.atomic_or(active_node_mask[I_], LEFT)
+        if i+di==l_size: ti.atomic_or(active_node_mask[I_], RIGHT)
+        if j+dj==0: ti.atomic_or(active_node_mask[I_], UP)
+        if j+dj==l_size: ti.atomic_or(active_node_mask[I_], DOWN)
 
-        if i+di-1>=0: active_node_mask[_map(l, vec2(i+di-1,j+dj))] |= RIGHT
-        if i+di+1<=l_size: active_node_mask[_map(l, vec2(i+di+1,j+dj))] |= LEFT
-        if j+dj-1>=0: active_node_mask[_map(l, vec2(i+di,j+dj-1))] |= DOWN
-        if j+dj+1<=l_size: active_node_mask[_map(l, vec2(i+di,j+dj+1))] |= UP
+        if i+di-1>=0: ti.atomic_or(active_node_mask[_map(l, vec2(i+di-1,j+dj))], RIGHT)
+        if i+di+1<=l_size: ti.atomic_or(active_node_mask[_map(l, vec2(i+di+1,j+dj))], LEFT)
+        if j+dj-1>=0: ti.atomic_or(active_node_mask[_map(l, vec2(i+di,j+dj-1))], DOWN)
+        if j+dj+1<=l_size: ti.atomic_or(active_node_mask[_map(l, vec2(i+di,j+dj+1))], UP)
 
 @ti.kernel
 def mark_mask():
@@ -77,17 +77,17 @@ def mark_mask():
 
 for l in range(level):
   accumulate_mask(l)
-  mark_mask()
+mark_mask()
 # --------------------------------
 
 dt = 1e-4
-gravity = ti.Vector([0.0, -98.0])
+gravity = ti.Vector([0.0, -9.8])
 
 # -------- particle data --------
 radius = 0.5 # Half-cell; this reflects what the radius is at the finest level of adaptivity
 p_mass = 1.0
-n_particles = 10000
-E, nu = 5e2, 0.2  # Young's modulus and Poisson's ratio
+n_particles = 20000
+E, nu = 5e3, 0.2  # Young's modulus and Poisson's ratio
 mu, la = E / (2 * (1 + nu)), E * nu / (
     (1 + nu) * (1 - 2 * nu))  # Lame parameters
 x_p = ti.Vector.field(2, ti.f32, shape=n_particles)
@@ -107,8 +107,8 @@ def reinitialize():
 @ti.kernel
 def initialize_particle():
   for i in range(n_particles):
-    x_p[i] = [ti.random() * 0.3 + 0.3, ti.random() * 0.3 + 0.55]
-    v_p[i] = [0, -10.0]
+    x_p[i] = [ti.random() * 0.6 + 0.2, ti.random() * 0.2 + 0.3]
+    v_p[i] = [0, -20.0]
     F_p[i] = ti.Matrix.identity(ti.f32, 2)
     m_p[i] = p_mass
 
@@ -200,8 +200,8 @@ def grid_op(l : ti.template()):
       ad_grid_v[l, I] /= ad_grid_m[l, I]
       ad_grid_v[l, I] += gravity * dt
       for v in ti.static(range(2)):
-        if _map(l, I)[v] < 3 or _map(l, I)[v] > finest_size - 3:
-          ad_grid_v[l, I][v] = 0.0
+        if _map(l, I)[v] < 4 or _map(l, I)[v] > finest_size - 4:
+          ad_grid_v[l, I][v] = -ad_grid_v[l, I][v]
 
 @ti.kernel
 def g2p():
@@ -326,7 +326,8 @@ def substep():
   g2p()
 
 while True:
-  for i in range(1):
+  for i in range(20):
     substep()
 
   show()
+  # time.sleep(50)
