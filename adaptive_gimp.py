@@ -78,12 +78,8 @@ def get_weight(trilinear_coordinates, dI, cell_):
       mx = bmax[v]
       mn = bmin[v]
     else: 
-      mx = 1.-bmax[v]
-      mn = 1.-bmin[v]
-    if mx < mn: 
-      tmp = mx
-      mx = mn
-      mn = tmp
+      mx = 1.-bmin[v]
+      mn = 1.-bmax[v]
     w[v] = mx**2-mn**2
     g_w[v] = (mx-mn) if cell_[v] else (mn-mx)
 
@@ -162,9 +158,9 @@ def g2p():
         new_v += ad_grid_v[f_l, base+dI+cell_] * weight
         new_G += ad_grid_v[f_l, base+dI+cell_].outer_product(g_weight)
       
-      v_p[p] = new_v
-      x_p[p] += dt * v_p[p] # advection
-      # F_p[p] = (ti.Matrix.identity(float, 2) + dt * 0.25 / (radius * radius * dx) * new_G) @ F_p[p]
+    v_p[p] = new_v
+    x_p[p] += dt * v_p[p] # advection
+    # F_p[p] = (ti.Matrix.identity(float, 2) + dt * 0.25 / (radius * radius * dx) * new_G) @ F_p[p]
 
 @ti.kernel
 def grid_accumulate(l : ti.template()):
