@@ -16,7 +16,7 @@ ACTIVATED = -1
 GHOST = -2
 T_JUNCTION = -3
 
-level = 2
+level = 3
 coarsest_size = 64 if args.fluid else 32
 coarsest_dx = 1 / coarsest_size
 finest_size = coarsest_size*(2**(level-1))
@@ -40,10 +40,13 @@ ad_grid_m = ti.field(ti.f32, shape=(level, finest_size+1, finest_size+1))
 @ti.kernel
 def initialize_mask():
   for i, j in ti.ndrange(finest_size, finest_size):
-    if i >= finest_size / 2:
-      active_cell_mask[0, i // 2, j // 2] = ACTIVATED
+    if i < finest_size / 2:
+      if j < finest_size / 2:
+        active_cell_mask[1, i // 2, j // 2] = ACTIVATED
+      else:
+        active_cell_mask[0, i // 4, j // 4] = ACTIVATED
     else:
-      active_cell_mask[1, i, j] = ACTIVATED
+      active_cell_mask[2, i, j] = ACTIVATED
 
 initialize_mask()
 
@@ -66,8 +69,6 @@ def accumulate_mask(l : ti.template()):
     if active_cell_mask[l, i,j] == ACTIVATED:
       for di,dj in ti.ndrange(2, 2):
         I_ = _map(l, vec2(i+di,j+dj))
-        ti.atomic_min(min_level_near_node[I_], l)
-        ti.atomic_max(max_level_near_node[I_], l)
         ti.atomic_or(active_node_mask[I_], REAL)
 
         if i+di==0: ti.atomic_or(active_node_mask[I_], LEFT)
@@ -91,9 +92,49 @@ def mark_mask():
 for l in range(level):
   accumulate_mask(l)
 mark_mask()
+
+@ti.kernel
+def initialize_level_near_node():
+  for I in ti.grouped(ti.ndrange(finest_size+1, finest_size+1)):
+    for l in range(level):
+      I1 = I // (2**(level-1-l))
+      if all(I % (2**(level-1-l)) == 0):
+        for dI in ti.grouped(ti.ndrange(2, 2)):
+          if all(0<=I1-dI<coarsest_size*(2**l)) and active_cell_mask[l, I1-dI] == ACTIVATED:
+            ti.atomic_min(min_level_near_node[I], l)
+            ti.atomic_max(max_level_near_node[I], l)
+      elif not any(I % (2**(level-1-l)) == 0):
+        pass
+      elif I[0] % (2**(level-1-l)) == 0:
+        for d in range(2):
+          if 0<=I1[0]-d<coarsest_size*(2**l) and active_cell_mask[l, I1[0]-d, I1[1]] == ACTIVATED:
+            ti.atomic_min(min_level_near_node[I], l)
+            ti.atomic_max(max_level_near_node[I], l)
+      elif I[1] % (2**(level-1-l)) == 0:
+        for d in range(2):
+          if 0<=I1[1]-d<coarsest_size*(2**l) and active_cell_mask[l, I1[0], I1[1]-d] == ACTIVATED:
+            ti.atomic_min(min_level_near_node[I], l)
+            ti.atomic_max(max_level_near_node[I], l)
+
+initialize_level_near_node()
+
+@ti.func
+def get_finest_level_near_particle(p):
+  f_l = -1 # finest-level near the particle
+  for l0 in range(level):
+    l = level-l0-1 # reverse iteration
+    dx = coarsest_dx / (2**l)
+    base = (x_p[p] / dx + 0.5).cast(int) - 1
+    for dI in ti.grouped(ti.ndrange(2, 2)):
+      if active_cell_mask[l, base+dI] == ACTIVATED:
+        f_l = l
+        break
+    if f_l == l: break
+  return f_l
+
 # --------------------------------
 
-dt = 1e-4
+dt = 1e-5
 gravity = ti.Vector([0.0, -100.0])
 
 # -------- particle data --------
@@ -168,20 +209,6 @@ def get_stress(F):
   stress = 2 * mu * (F - U @ V.transpose()) @ F.transpose() + ti.Matrix.identity(float, 2) * la * J * (J - 1)
   return stress
 
-@ti.func
-def get_finest_level_near_particle(p):
-  f_l = -1 # finest-level near the particle
-  for l0 in range(level):
-    l = level-l0-1 # reverse iteration
-    dx = coarsest_dx / (2**l)
-    base = (x_p[p] / dx + 0.5).cast(int) - 1
-    for dI in ti.grouped(ti.ndrange(2, 2)):
-      if active_cell_mask[l, base+dI] == ACTIVATED:
-        f_l = l
-        break
-    if f_l == l: break
-  return f_l
-
 @ti.kernel
 def p2g():
   for p in range(n_particles):
@@ -214,7 +241,7 @@ def grid_op(l : ti.template()):
       ad_grid_v[l, I] /= ad_grid_m[l, I]
       ad_grid_v[l, I] += gravity * dt
       for v in ti.static(range(2)):
-        if _map(l, I)[v] < 4 or _map(l, I)[v] > finest_size - 4:
+        if _map(l, I)[v] < 3 * 2**(level-1) or _map(l, I)[v] > finest_size - 3 * 2**(level-1):
           ad_grid_v[l, I][v] = 0
 
 @ti.kernel
@@ -243,6 +270,7 @@ def g2p():
 def grid_restriction(l : ti.template()):
   l_size = coarsest_size * (2**l)
   for I in ti.grouped(ti.ndrange(l_size+1, l_size+1)):
+    # TODO FIXME(changyu): ghost cell may also need to act as conduits ...
     if (active_node_mask[_map(l, I)] == ACTIVATED or active_node_mask[_map(l, I)] == T_JUNCTION) and min_level_near_node[_map(l, I)] <= l:
       I2 = I * 2
       for dI in ti.grouped(ti.ndrange((-1, 2), (-1, 2))):
@@ -277,7 +305,7 @@ def grid_prolongation(l : ti.template()):
 
 
 # ------- visualization -------
-res = 640
+res = 768
 bg_img = ti.Vector.field(3, ti.f32, shape=(res, res))
 window = ti.ui.Window('Adaptive GIMP', res = (res, res))
 canvas = window.get_canvas()
@@ -301,17 +329,20 @@ def visualize_mask():
     fscale = res // (finest_size)
     if i % fscale == 0 and j % fscale == 0:
       if active_node_mask[i // fscale, j // fscale] == ACTIVATED:
-        for di, dj in ti.ndrange(3, 3):
-          if 0<=i+di-1 < res and 0<=j+dj-1 < res:
-            bg_img[i+di-1, j+dj-1] = ti.Vector([1.0, 0.0, 0.0])
+        bg_img[i, j] = ti.Vector([1.0, 0.0, 0.0])
+        for di, dj in ti.ndrange((-1, 2), (-1, 2)):
+          if 0<=i+di < res and 0<=j+dj < res:
+            bg_img[i+di, j+dj] = ti.Vector([1.0, 0.0, 0.0])
       elif active_node_mask[i // fscale, j // fscale] == T_JUNCTION:
-        for di, dj in ti.ndrange(3, 3):
-          if 0<=i+di-1 < res and 0<=j+dj-1 < res:
-            bg_img[i+di-1, j+dj-1] = ti.Vector([0.0, 1.0, 0.0])
+        bg_img[i, j] = ti.Vector([0.0, 1.0, 0.0])
+        for di, dj in ti.ndrange((-1, 2), (-1, 2)):
+          if 0<=i+di < res and 0<=j+dj < res:
+            bg_img[i+di, j+dj] = ti.Vector([0.0, 1.0, 0.0])
       elif active_node_mask[i // fscale, j // fscale] == GHOST:
-        for di, dj in ti.ndrange(3, 3):
-          if 0<=i+di-1 < res and 0<=j+dj-1 < res:
-            bg_img[i+di-1, j+dj-1] = ti.Vector([0.0, 0.0, 0.55])
+        bg_img[i, j] = ti.Vector([0.0, 0.0, 0.55])
+        for di, dj in ti.ndrange((-1, 2), (-1, 2)):
+          if 0<=i+di < res and 0<=j+dj < res:
+            bg_img[i+di, j+dj] = ti.Vector([0.0, 0.0, 0.55])
 
 
 def show():
