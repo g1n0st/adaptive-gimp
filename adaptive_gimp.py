@@ -1,4 +1,10 @@
 import taichi as ti
+import argparse
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--fluid', action='store_true')
+args = parser.parse_args()
+
 import time
 ti.init(arch=ti.cpu)
 
@@ -11,7 +17,7 @@ GHOST = -2
 T_JUNCTION = -3
 
 level = 2
-coarsest_size = 32
+coarsest_size = 64 if args.fluid else 32
 coarsest_dx = 1 / coarsest_size
 finest_size = coarsest_size*(2**(level-1))
 
@@ -42,7 +48,7 @@ initialize_mask()
        |
 0x01 ------ 0x02
        |
-       0x04
+      0x04
 '''
 REAL = 0xF0
 UP = 0x08
@@ -81,15 +87,16 @@ mark_mask()
 # --------------------------------
 
 dt = 1e-4
-gravity = ti.Vector([0.0, -9.8])
+gravity = ti.Vector([0.0, -100.0])
 
 # -------- particle data --------
 radius = 0.5 # Half-cell; this reflects what the radius is at the finest level of adaptivity
 p_mass = 1.0
 n_particles = 20000
 E, nu = 5e3, 0.2  # Young's modulus and Poisson's ratio
-mu, la = E / (2 * (1 + nu)), E * nu / (
-    (1 + nu) * (1 - 2 * nu))  # Lame parameters
+mu, la = E / (2 * (1 + nu)), E * nu / ((1 + nu) * (1 - 2 * nu))  # Lame parameters
+if args.fluid: mu = 0.0
+
 x_p = ti.Vector.field(2, ti.f32, shape=n_particles)
 v_p = ti.Vector.field(2, ti.f32, shape=n_particles)
 F_p = ti.Matrix.field(2, 2, ti.f32, shape=n_particles)
@@ -107,7 +114,7 @@ def reinitialize():
 @ti.kernel
 def initialize_particle():
   for i in range(n_particles):
-    x_p[i] = [ti.random() * 0.6 + 0.2, ti.random() * 0.2 + 0.3]
+    x_p[i] = [ti.random() * 0.6 + 0.2, ti.random() * 0.4 + 0.3]
     v_p[i] = [0, -20.0]
     F_p[i] = ti.Matrix.identity(ti.f32, 2)
     m_p[i] = p_mass
@@ -201,7 +208,7 @@ def grid_op(l : ti.template()):
       ad_grid_v[l, I] += gravity * dt
       for v in ti.static(range(2)):
         if _map(l, I)[v] < 4 or _map(l, I)[v] > finest_size - 4:
-          ad_grid_v[l, I][v] = -ad_grid_v[l, I][v]
+          ad_grid_v[l, I][v] = 0
 
 @ti.kernel
 def g2p():
@@ -223,6 +230,7 @@ def g2p():
     v_p[p] = new_v
     x_p[p] += dt * v_p[p] # advection
     F_p[p] = (ti.Matrix.identity(float, 2) + dt * 0.25 / (radius * radius * dx) * new_G) @ F_p[p]
+    if ti.static(args.fluid): F_p[p] = ti.Matrix.identity(float, 2) * ti.sqrt(F_p[p].determinant())
 
 @ti.kernel
 def grid_restriction(l : ti.template()):
@@ -278,9 +286,9 @@ def visualize_mask():
         if i % scale == 0 or i % scale == scale-1 or j % scale == 0 or j % scale == scale-1:
           bg_img[i, j] = ti.Vector([0.18, 0.58, 0.88])
       elif active_cell_mask[l, i // scale, j // scale] == GHOST: # ghost cell
-        bg_img[i, j] = ti.Vector([0, 0, 0.77])
+        bg_img[i, j] = ti.Vector([0, 0, 1.0])
         if i % scale == 0 or i % scale == scale-1 or j % scale == 0 or j % scale == scale-1:
-          bg_img[i, j] = ti.Vector([0, 0, 0.55])
+          bg_img[i, j] = ti.Vector([0, 0, 0.77])
   
   for i, j in ti.ndrange(res, res):
     fscale = res // (finest_size)
@@ -296,7 +304,7 @@ def visualize_mask():
       elif active_node_mask[i // fscale, j // fscale] == GHOST:
         for di, dj in ti.ndrange(3, 3):
           if 0<=i+di-1 < res and 0<=j+dj-1 < res:
-            bg_img[i+di-1, j+dj-1] = ti.Vector([0.0, 0.0, 1.0])
+            bg_img[i+di-1, j+dj-1] = ti.Vector([0.0, 0.0, 0.55])
 
 
 def show():
@@ -330,4 +338,3 @@ while True:
     substep()
 
   show()
-  # time.sleep(50)
