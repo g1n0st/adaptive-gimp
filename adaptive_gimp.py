@@ -24,6 +24,10 @@ finest_size = coarsest_size*(2**(level-1))
 # NOTE: 0-coarsest, (level-1)-finest
 active_cell_mask = ti.field(ti.i32, shape=(level, finest_size, finest_size))
 active_node_mask = ti.field(ti.i32, shape=(finest_size+1, finest_size+1))
+min_level_near_node = ti.field(ti.i32, shape=(finest_size+1, finest_size+1))
+max_level_near_node = ti.field(ti.i32, shape=(finest_size+1, finest_size+1))
+min_level_near_node.fill(level)
+max_level_near_node.fill(-1)
 
 @ti.func
 def _map(l, I): # map the level-l node to the finest node
@@ -62,7 +66,10 @@ def accumulate_mask(l : ti.template()):
     if active_cell_mask[l, i,j] == ACTIVATED:
       for di,dj in ti.ndrange(2, 2):
         I_ = _map(l, vec2(i+di,j+dj))
+        ti.atomic_min(min_level_near_node[I_], l)
+        ti.atomic_max(max_level_near_node[I_], l)
         ti.atomic_or(active_node_mask[I_], REAL)
+
         if i+di==0: ti.atomic_or(active_node_mask[I_], LEFT)
         if i+di==l_size: ti.atomic_or(active_node_mask[I_], RIGHT)
         if j+dj==0: ti.atomic_or(active_node_mask[I_], UP)
@@ -236,7 +243,7 @@ def g2p():
 def grid_restriction(l : ti.template()):
   l_size = coarsest_size * (2**l)
   for I in ti.grouped(ti.ndrange(l_size+1, l_size+1)):
-    if active_node_mask[_map(l, I)] == ACTIVATED or active_node_mask[_map(l, I)] == T_JUNCTION:
+    if (active_node_mask[_map(l, I)] == ACTIVATED or active_node_mask[_map(l, I)] == T_JUNCTION) and min_level_near_node[_map(l, I)] <= l:
       I2 = I * 2
       for dI in ti.grouped(ti.ndrange((-1, 2), (-1, 2))):
         if all(I2+dI>=0) and all(I2+dI <= l_size*2) and \
@@ -253,12 +260,12 @@ def grid_prolongation(l : ti.template()):
   l0_size = coarsest_size * (2**l0)
   l_size = l0_size * 2
   for I in ti.grouped(ti.ndrange(l_size+1, l_size+1)):
-    #                                                                                         FIXME(changyu): here is still a hack!
-    if active_node_mask[_map(l, I)] == T_JUNCTION or active_node_mask[_map(l, I)] == GHOST or all(I % 2 == 0): # non real-DOF should get value from real-DOF
+    if (active_node_mask[_map(l, I)] == T_JUNCTION or active_node_mask[_map(l, I)] == GHOST) or \
+      (min_level_near_node[_map(l, I)] < l <= max_level_near_node[_map(l, I)]): # non real-DOF should get value from real-DOF
       ad_grid_v[l, I].fill(0.0)
 
   for I in ti.grouped(ti.ndrange(l0_size+1, l0_size+1)):
-    if active_node_mask[_map(l0, I)] == ACTIVATED or active_node_mask[_map(l0, I)] == T_JUNCTION:
+    if (active_node_mask[_map(l0, I)] == ACTIVATED or active_node_mask[_map(l0, I)] == T_JUNCTION) and min_level_near_node[_map(l0, I)] < l:
       I2 = I * 2
       for dI in ti.grouped(ti.ndrange((-1, 2), (-1, 2))):
         if all(I2+dI>=0) and all(I2+dI <= l_size*2) and \
