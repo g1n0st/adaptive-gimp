@@ -37,18 +37,27 @@ def _map(l, I): # map the level-l node to the finest node
 ad_grid_v = ti.Vector.field(2, ti.f32, shape=(level, finest_size+1, finest_size+1))
 ad_grid_m = ti.field(ti.f32, shape=(level, finest_size+1, finest_size+1))
 
+@ti.func
+def activate_cell(l, i, j):
+  active_cell_mask[l, i // (2**(level-1-l)), j // (2**(level-1-l))] = ACTIVATED
+
 @ti.kernel
-def initialize_mask():
+def initialize_mask1():
   for i, j in ti.ndrange(finest_size, finest_size):
     if i < finest_size / 2:
-      if j < finest_size / 2:
-        active_cell_mask[1, i // 2, j // 2] = ACTIVATED
-      else:
-        active_cell_mask[0, i // 4, j // 4] = ACTIVATED
-    else:
-      active_cell_mask[2, i, j] = ACTIVATED
+      if j < finest_size / 2: activate_cell(0, i, j)
+      else: activate_cell(0, i, j)
+    else: activate_cell(2, i, j)
 
-initialize_mask()
+@ti.kernel
+def initialize_mask2():
+  for i, j in ti.ndrange(finest_size, finest_size):
+    if i < finest_size / 4:
+      activate_cell(0, i, j)
+    elif i < finest_size / 2: activate_cell(1, i, j)
+    else: activate_cell(2, i, j)
+
+initialize_mask1()
 
 '''
       0x08
@@ -230,9 +239,10 @@ def p2g():
             active_node_mask[_map(f_l, base+dI+cell_)] = GHOST # ghost node
         weight, g_weight = get_weight(trilinear_coordinates, dI, cell_)
         ad_grid_m[f_l, base+dI+cell_] += weight * m_p[p]
-        # ad_grid_v[f_l, base+dI+cell_] += weight * m_p[p] * v_p[p]
-        ad_grid_v[f_l, base+dI+cell_] += weight * (m_p[p] * v_p[p]) + stress @ g_weight
+        ad_grid_v[f_l, base+dI+cell_] += weight * m_p[p] * v_p[p]
+        # ad_grid_v[f_l, base+dI+cell_] += weight * (m_p[p] * v_p[p]) + stress @ g_weight
 
+boundary_gap = 2
 @ti.kernel
 def grid_op(l : ti.template()):
   l_size = coarsest_size * (2**l)+1
@@ -241,7 +251,7 @@ def grid_op(l : ti.template()):
       ad_grid_v[l, I] /= ad_grid_m[l, I]
       ad_grid_v[l, I] += gravity * dt
       for v in ti.static(range(2)):
-        if _map(l, I)[v] < 3 * 2**(level-1) or _map(l, I)[v] > finest_size - 3 * 2**(level-1):
+        if _map(l, I)[v] < boundary_gap * 2**(level-1) or _map(l, I)[v] > finest_size - boundary_gap * 2**(level-1):
           ad_grid_v[l, I][v] = 0
 
 @ti.kernel
