@@ -2,32 +2,26 @@ import taichi as ti
 import argparse
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--fluid', action='store_true')
 args = parser.parse_args()
 
-import time
 ti.init(arch=ti.cpu)
 
 vec2 = ti.math.ivec2
 
 # ----- adaptive grid data ------
 UNACTIVATED = 0
-ACTIVATED = -1
-GHOST = -2
-T_JUNCTION = -3
+ACTIVATED = 1
+GHOST = 2
+T_JUNCTION = 3
 
-level = 3
-coarsest_size = 64 if args.fluid else 32
+level = 4
+coarsest_size = 16
 coarsest_dx = 1 / coarsest_size
 finest_size = coarsest_size*(2**(level-1))
 
 # NOTE: 0-coarsest, (level-1)-finest
 active_cell_mask = ti.field(ti.i32, shape=(level, finest_size, finest_size))
 active_node_mask = ti.field(ti.i32, shape=(finest_size+1, finest_size+1))
-min_level_near_node = ti.field(ti.i32, shape=(finest_size+1, finest_size+1))
-max_level_near_node = ti.field(ti.i32, shape=(finest_size+1, finest_size+1))
-min_level_near_node.fill(level)
-max_level_near_node.fill(-1)
 
 @ti.func
 def _map(l, I): # map the level-l node to the finest node
@@ -45,9 +39,8 @@ def activate_cell(l, i, j):
 def initialize_mask1():
   for i, j in ti.ndrange(finest_size, finest_size):
     if i < finest_size / 2:
-      if j < finest_size / 2: activate_cell(0, i, j)
-      else: activate_cell(0, i, j)
-    else: activate_cell(2, i, j)
+      activate_cell(0, i, j)
+    else: activate_cell(3, i, j)
 
 @ti.kernel
 def initialize_mask2():
@@ -56,6 +49,23 @@ def initialize_mask2():
       activate_cell(0, i, j)
     elif i < finest_size / 2: activate_cell(1, i, j)
     else: activate_cell(2, i, j)
+
+@ti.kernel
+def initialize_mask3():
+  for i, j in ti.ndrange(finest_size, finest_size):
+    if i < finest_size / 2:
+      if j < finest_size / 2: activate_cell(1, i, j)
+      else: activate_cell(2, i, j)
+    else: activate_cell(3, i, j)
+
+@ti.kernel
+def initialize_mask4():
+  for i, j in ti.ndrange(finest_size, finest_size):
+    if i < finest_size / 2:
+      if j < finest_size / 4: activate_cell(0, i, j)
+      elif j < finest_size / 2: activate_cell(1, i, j)
+      else: activate_cell(2, i, j)
+    else: activate_cell(3, i, j)
 
 initialize_mask1()
 
@@ -73,7 +83,7 @@ def mark_T_junction():
   LEFT = 0x01
   RIGHT = 0x02
   @ti.kernel
-  def accumulate_mask(l : ti.template()):
+  def _accumulate_mask(l : ti.template()):
     l_size = coarsest_size * (2**l)
     for i,j in ti.ndrange(l_size, l_size):
       if active_cell_mask[l, i,j] == ACTIVATED:
@@ -92,7 +102,7 @@ def mark_T_junction():
           if j+dj+1<=l_size: ti.atomic_or(active_node_mask[_map(l, vec2(i+di,j+dj+1))], UP)
 
   @ti.kernel
-  def mark_mask():
+  def _mark_T_junction():
     for i,j in ti.ndrange(finest_size+1, finest_size+1):
       if active_node_mask[i, j] & 0xF0 > 0:
         if active_node_mask[i, j] & 0x0F == 0x0F: active_node_mask[i, j] = ACTIVATED
@@ -100,37 +110,47 @@ def mark_T_junction():
       else: active_node_mask[i, j] = UNACTIVATED
 
   for l in range(level):
-    accumulate_mask(l)
-  mark_mask()
+    _accumulate_mask(l)
+  _mark_T_junction()
 
 mark_T_junction()
 
+def mark_ghost():
+  dir = [[0, -1], [0, 1], [-1, 0], [1, 0]]
+  @ti.func
+  def _heriarchical_check(l, I):
+    res = False
+    while l >= 0:
+      if active_cell_mask[l, I] == ACTIVATED:
+        res = True
+        break
+      l -= 1
+      I //= 2
+    return res
 
+  @ti.kernel
+  def _mark_ghost(l : ti.template()):
+    l_size = coarsest_size * (2**l)
+    for I in ti.grouped(ti.ndrange(l_size, l_size)):
+      if active_cell_mask[l, I] == ACTIVATED:
+        for _ in ti.static(range(4)):
+          I1 = I+dir[_]
+          if all(I1>=0 and I1<l_size) and active_cell_mask[l, I1] == UNACTIVATED \
+            and _heriarchical_check(l, I1):
+            tmp_l = l
+            while active_cell_mask[tmp_l, I1] != ACTIVATED:
+              ti.atomic_or(active_cell_mask[tmp_l, I1], GHOST)
+              for cell_ in ti.grouped(ti.ndrange(2, 2)):
+                if active_node_mask[_map(tmp_l, I1+cell_)] == UNACTIVATED:
+                  ti.atomic_or(active_node_mask[_map(tmp_l, I1+cell_)], GHOST)
+              tmp_l -= 1
+              I1 //= 2
+            
 
-@ti.kernel
-def initialize_level_near_node():
-  for I in ti.grouped(ti.ndrange(finest_size+1, finest_size+1)):
-    for l in range(level):
-      I1 = I // (2**(level-1-l))
-      if all(I % (2**(level-1-l)) == 0):
-        for dI in ti.grouped(ti.ndrange(2, 2)):
-          if all(0<=I1-dI<coarsest_size*(2**l)) and active_cell_mask[l, I1-dI] == ACTIVATED:
-            ti.atomic_min(min_level_near_node[I], l)
-            ti.atomic_max(max_level_near_node[I], l)
-      elif not any(I % (2**(level-1-l)) == 0):
-        pass
-      elif I[0] % (2**(level-1-l)) == 0:
-        for d in range(2):
-          if 0<=I1[0]-d<coarsest_size*(2**l) and active_cell_mask[l, I1[0]-d, I1[1]] == ACTIVATED:
-            ti.atomic_min(min_level_near_node[I], l)
-            ti.atomic_max(max_level_near_node[I], l)
-      elif I[1] % (2**(level-1-l)) == 0:
-        for d in range(2):
-          if 0<=I1[1]-d<coarsest_size*(2**l) and active_cell_mask[l, I1[0], I1[1]-d] == ACTIVATED:
-            ti.atomic_min(min_level_near_node[I], l)
-            ti.atomic_max(max_level_near_node[I], l)
+  for l in reversed(range(level)):
+    _mark_ghost(l)
 
-initialize_level_near_node()
+mark_ghost()
 
 @ti.func
 def get_finest_level_near_particle(p):
@@ -148,7 +168,7 @@ def get_finest_level_near_particle(p):
 
 # --------------------------------
 
-dt = 1e-5
+dt = 2e-5
 gravity = ti.Vector([0.0, -100.0])
 
 # -------- particle data --------
@@ -157,7 +177,6 @@ p_mass = 1.0
 n_particles = 20000
 E, nu = 5e3, 0.2  # Young's modulus and Poisson's ratio
 mu, la = E / (2 * (1 + nu)), E * nu / ((1 + nu) * (1 - 2 * nu))  # Lame parameters
-if args.fluid: mu = 0.0
 
 x_p = ti.Vector.field(2, ti.f32, shape=n_particles)
 v_p = ti.Vector.field(2, ti.f32, shape=n_particles)
@@ -166,12 +185,6 @@ m_p = ti.field(ti.f32, shape=n_particles)
 
 # auxiliary data
 fl_p = ti.field(ti.i32, shape=n_particles)
-
-@ti.kernel
-def reinitialize():
-  for I in ti.grouped(ti.ndrange(finest_size+1, finest_size+1)):
-    if active_node_mask[I] == GHOST:
-      active_node_mask[I] = UNACTIVATED
 
 @ti.kernel
 def initialize_particle():
@@ -187,10 +200,6 @@ initialize_particle()
 @ti.kernel
 def reinitialize_level(l : ti.template()):
   l_size = coarsest_size * (2**l)
-  for I in ti.grouped(ti.ndrange(l_size, l_size)):
-    if active_cell_mask[l, I] == GHOST:
-      active_cell_mask[l, I] = UNACTIVATED
-    
   for I in ti.grouped(ti.ndrange(l_size+1, l_size+1)):
     ad_grid_m[l, I] = 0
     ad_grid_v[l, I].fill(0.0)
@@ -237,27 +246,11 @@ def p2g():
     stress = -dt * 0.25 / (radius * radius * dx) * get_stress(F_p[p])
 
     for dI in ti.grouped(ti.ndrange(2, 2)):
-      if active_cell_mask[f_l, base+dI] == UNACTIVATED: 
-        active_cell_mask[f_l, base+dI] = GHOST # ghost cell
       for cell_ in ti.grouped(ti.ndrange(2, 2)):
-        if active_node_mask[_map(f_l, base+dI+cell_)] == UNACTIVATED:
-            active_node_mask[_map(f_l, base+dI+cell_)] = GHOST # ghost node
         weight, g_weight = get_weight(trilinear_coordinates, dI, cell_)
         ad_grid_m[f_l, base+dI+cell_] += weight * m_p[p]
-        ad_grid_v[f_l, base+dI+cell_] += weight * m_p[p] * v_p[p]
-        # ad_grid_v[f_l, base+dI+cell_] += weight * (m_p[p] * v_p[p]) + stress @ g_weight
-
-boundary_gap = 2
-@ti.kernel
-def grid_op(l : ti.template()):
-  l_size = coarsest_size * (2**l)+1
-  for I in ti.grouped(ti.ndrange(l_size, l_size)):
-    if ad_grid_m[l, I] > 0 and active_node_mask[_map(l, I)] == ACTIVATED: # only on real degree-of-freedom
-      ad_grid_v[l, I] /= ad_grid_m[l, I]
-      ad_grid_v[l, I] += gravity * dt
-      for v in ti.static(range(2)):
-        if _map(l, I)[v] < boundary_gap * 2**(level-1) or _map(l, I)[v] > finest_size - boundary_gap * 2**(level-1):
-          ad_grid_v[l, I][v] = 0
+        # ad_grid_v[f_l, base+dI+cell_] += weight * m_p[p] * v_p[p]
+        ad_grid_v[f_l, base+dI+cell_] += weight * (m_p[p] * v_p[p]) + stress @ g_weight
 
 @ti.kernel
 def g2p():
@@ -279,17 +272,26 @@ def g2p():
     v_p[p] = new_v
     x_p[p] += dt * v_p[p] # advection
     F_p[p] = (ti.Matrix.identity(float, 2) + dt * 0.25 / (radius * radius * dx) * new_G) @ F_p[p]
-    if ti.static(args.fluid): F_p[p] = ti.Matrix.identity(float, 2) * ti.sqrt(F_p[p].determinant())
+
+boundary_gap = 2
+@ti.kernel
+def grid_op(l : ti.template()):
+  l_size = coarsest_size * (2**l)+1
+  for I in ti.grouped(ti.ndrange(l_size, l_size)):
+    if ad_grid_m[l, I] > 0 and active_node_mask[_map(l, I)] == ACTIVATED: # only on real degree-of-freedom
+      ad_grid_v[l, I] /= ad_grid_m[l, I]
+      ad_grid_v[l, I] += gravity * dt
+      for v in ti.static(range(2)):
+        if _map(l, I)[v] < boundary_gap * 2**(level-1) or _map(l, I)[v] > finest_size - boundary_gap * 2**(level-1):
+          ad_grid_v[l, I][v] = 0
 
 @ti.kernel
 def grid_restriction(l : ti.template()):
   l_size = coarsest_size * (2**l)
   for I in ti.grouped(ti.ndrange(l_size+1, l_size+1)):
-    # TODO FIXME(changyu): ghost cell may also need to act as conduits ...
     if (active_node_mask[_map(l, I)] == ACTIVATED or \
         active_node_mask[_map(l, I)] == T_JUNCTION or \
-        active_node_mask[_map(l, I)] == GHOST) \
-      and min_level_near_node[_map(l, I)] <= l:
+        active_node_mask[_map(l, I)] == GHOST):
       I2 = I * 2
       for dI in ti.grouped(ti.ndrange((-1, 2), (-1, 2))):
         if all(I2+dI>=0) and all(I2+dI <= l_size*2) and \
@@ -306,12 +308,12 @@ def grid_prolongation(l : ti.template()):
   l0_size = coarsest_size * (2**l0)
   l_size = l0_size * 2
   for I in ti.grouped(ti.ndrange(l_size+1, l_size+1)):
-    if (active_node_mask[_map(l, I)] == T_JUNCTION or active_node_mask[_map(l, I)] == GHOST) or \
-      (min_level_near_node[_map(l, I)] < l <= max_level_near_node[_map(l, I)]): # non real-DOF should get value from real-DOF
+    if (active_node_mask[_map(l, I)] == T_JUNCTION or active_node_mask[_map(l, I)] == GHOST or active_node_mask[_map(l, I)] == UNACTIVATED) or \
+      all(I % 2 == 0): # non real-DOF should get value from real-DOF
       ad_grid_v[l, I].fill(0.0)
 
   for I in ti.grouped(ti.ndrange(l0_size+1, l0_size+1)):
-    if (active_node_mask[_map(l0, I)] == ACTIVATED or active_node_mask[_map(l0, I)] == T_JUNCTION) and min_level_near_node[_map(l0, I)] < l:
+    if (active_node_mask[_map(l0, I)] == ACTIVATED or active_node_mask[_map(l0, I)] == T_JUNCTION or active_node_mask[_map(l0, I)] == GHOST):
       I2 = I * 2
       for dI in ti.grouped(ti.ndrange((-1, 2), (-1, 2))):
         if all(I2+dI>=0) and all(I2+dI <= l_size*2) and \
@@ -372,7 +374,6 @@ def show():
 # --------------------------------
 
 def substep():
-  reinitialize()
   for l in range(level):
       reinitialize_level(l)
   
