@@ -1,397 +1,257 @@
 import taichi as ti
-import argparse
+from utils import *
 
-parser = argparse.ArgumentParser()
-args = parser.parse_args()
+@ti.data_oriented
+class AdaptiveGIMP:
+  def __init__(self, level, grid_initializer, particle_initializer):
+    # ----- adaptive grid data ------
+    self.level = 4
+    self.coarsest_size = 16
+    self.coarsest_dx = 1 / self.coarsest_size
+    self.finest_size = self.coarsest_size*(2**(self.level-1))
+    self.boundary_gap = 2
 
-ti.init(arch=ti.cpu)
+    # NOTE: 0-coarsest, (level-1)-finest
+    self.active_cell_mask = ti.field(ti.i32, shape=(self.level, self.finest_size, self.finest_size))
+    self.active_node_mask = ti.field(ti.i32, shape=(self.finest_size+1, self.finest_size+1))
+    # TODO(changyu): use dense grid for now
+    self.ad_grid_v = ti.Vector.field(2, ti.f32, shape=(level, self.finest_size+1, self.finest_size+1))
+    self.ad_grid_m = ti.field(ti.f32, shape=(level, self.finest_size+1, self.finest_size+1))
 
-vec2 = ti.math.ivec2
 
-# ----- adaptive grid data ------
-UNACTIVATED = 0
-ACTIVATED = 1
-GHOST = 2
-T_JUNCTION = 3
+    # -------- particle data --------
+    self.radius = 0.5 # Half-cell; this reflects what the radius is at the finest level of adaptivity
+    self.p_mass = 1.0
+    self.gravity = ti.Vector([0.0, -100.0])
+    self.n_particles = 20000
+    E, nu = 5e3, 0.2  # Young's modulus and Poisson's ratio
+    self.mu, self.la = E / (2 * (1 + nu)), E * nu / ((1 + nu) * (1 - 2 * nu))  # Lame parameters
 
-level = 4
-coarsest_size = 16
-coarsest_dx = 1 / coarsest_size
-finest_size = coarsest_size*(2**(level-1))
+    self.x_p = ti.Vector.field(2, ti.f32, shape=self.n_particles)
+    self.v_p = ti.Vector.field(2, ti.f32, shape=self.n_particles)
+    self.F_p = ti.Matrix.field(2, 2, ti.f32, shape=self.n_particles)
+    self.m_p = ti.field(ti.f32, shape=self.n_particles)
+    self.fl_p = ti.field(ti.i32, shape=self.n_particles) # auxiliary data
 
-# NOTE: 0-coarsest, (level-1)-finest
-active_cell_mask = ti.field(ti.i32, shape=(level, finest_size, finest_size))
-active_node_mask = ti.field(ti.i32, shape=(finest_size+1, finest_size+1))
+    grid_initializer(self)
+    self.mark_T_junction()
+    self.mark_ghost()
+    particle_initializer(self)
 
-@ti.func
-def _map(l, I): # map the level-l node to the finest node
-  return I * (2**(level-1-l))
-
-# TODO(changyu): use dense grid for now
-ad_grid_v = ti.Vector.field(2, ti.f32, shape=(level, finest_size+1, finest_size+1))
-ad_grid_m = ti.field(ti.f32, shape=(level, finest_size+1, finest_size+1))
-
-@ti.func
-def activate_cell(l, i, j):
-  active_cell_mask[l, i // (2**(level-1-l)), j // (2**(level-1-l))] = ACTIVATED
-
-@ti.kernel
-def initialize_mask1():
-  for i, j in ti.ndrange(finest_size, finest_size):
-    if i < finest_size / 2:
-      activate_cell(0, i, j)
-    else: activate_cell(3, i, j)
-
-@ti.kernel
-def initialize_mask2():
-  for i, j in ti.ndrange(finest_size, finest_size):
-    if i < finest_size / 4:
-      activate_cell(0, i, j)
-    elif i < finest_size / 2: activate_cell(1, i, j)
-    else: activate_cell(2, i, j)
-
-@ti.kernel
-def initialize_mask3():
-  for i, j in ti.ndrange(finest_size, finest_size):
-    if i < finest_size / 2:
-      if j < finest_size / 2: activate_cell(1, i, j)
-      else: activate_cell(2, i, j)
-    else: activate_cell(3, i, j)
-
-@ti.kernel
-def initialize_mask4():
-  for i, j in ti.ndrange(finest_size, finest_size):
-    if i < finest_size / 2:
-      if j < finest_size / 4: activate_cell(0, i, j)
-      elif j < finest_size / 2: activate_cell(1, i, j)
-      else: activate_cell(2, i, j)
-    else: activate_cell(3, i, j)
-
-initialize_mask1()
-
-def mark_T_junction():
-  '''
-        0x08
-        |
-  0x01 ------ 0x02
-        |
-        0x04
-  '''
-  REAL = 0xF0
-  UP = 0x08
-  DOWN = 0x04
-  LEFT = 0x01
-  RIGHT = 0x02
-  @ti.kernel
-  def _accumulate_mask(l : ti.template()):
-    l_size = coarsest_size * (2**l)
-    for i,j in ti.ndrange(l_size, l_size):
-      if active_cell_mask[l, i,j] == ACTIVATED:
-        for di,dj in ti.ndrange(2, 2):
-          I_ = _map(l, vec2(i+di,j+dj))
-          ti.atomic_or(active_node_mask[I_], REAL)
-
-          if i+di==0: ti.atomic_or(active_node_mask[I_], LEFT)
-          if i+di==l_size: ti.atomic_or(active_node_mask[I_], RIGHT)
-          if j+dj==0: ti.atomic_or(active_node_mask[I_], UP)
-          if j+dj==l_size: ti.atomic_or(active_node_mask[I_], DOWN)
-
-          if i+di-1>=0: ti.atomic_or(active_node_mask[_map(l, vec2(i+di-1,j+dj))], RIGHT)
-          if i+di+1<=l_size: ti.atomic_or(active_node_mask[_map(l, vec2(i+di+1,j+dj))], LEFT)
-          if j+dj-1>=0: ti.atomic_or(active_node_mask[_map(l, vec2(i+di,j+dj-1))], DOWN)
-          if j+dj+1<=l_size: ti.atomic_or(active_node_mask[_map(l, vec2(i+di,j+dj+1))], UP)
-
-  @ti.kernel
-  def _mark_T_junction():
-    for i,j in ti.ndrange(finest_size+1, finest_size+1):
-      if active_node_mask[i, j] & 0xF0 > 0:
-        if active_node_mask[i, j] & 0x0F == 0x0F: active_node_mask[i, j] = ACTIVATED
-        elif active_node_mask[i, j] & 0x0F > 0: active_node_mask[i, j] = T_JUNCTION
-      else: active_node_mask[i, j] = UNACTIVATED
-
-  for l in range(level):
-    _accumulate_mask(l)
-  _mark_T_junction()
-
-mark_T_junction()
-
-def mark_ghost():
-  dir = [[0, -1], [0, 1], [-1, 0], [1, 0]]
   @ti.func
-  def _heriarchical_check(l, I):
-    res = False
-    while l >= 0:
-      if active_cell_mask[l, I] == ACTIVATED:
-        res = True
-        break
-      l -= 1
-      I //= 2
-    return res
+  def _map(self, l, I): # map the level-l node to the finest node
+    return I * (2**(self.level-1-l))
+
+  @ti.func
+  def activate_cell(self, l, I):
+    ti.atomic_or(self.active_cell_mask[l, I // (2**(self.level-1-l))], ACTIVATED)
+
+  def mark_T_junction(self):
+    '''
+          0x08
+          |
+    0x01 ------ 0x02
+          |
+          0x04
+    '''
+    REAL = 0xF0
+    UP = 0x08
+    DOWN = 0x04
+    LEFT = 0x01
+    RIGHT = 0x02
+    @ti.kernel
+    def _accumulate_mask(l : ti.template()):
+      l_size = self.coarsest_size * (2**l)
+      for i,j in ti.ndrange(l_size, l_size):
+        if self.active_cell_mask[l, i,j] == ACTIVATED:
+          for di,dj in ti.ndrange(2, 2):
+            I_ = self._map(l, vec2(i+di,j+dj))
+            ti.atomic_or(self.active_node_mask[I_], REAL)
+
+            if i+di==0: ti.atomic_or(self.active_node_mask[I_], LEFT)
+            if i+di==l_size: ti.atomic_or(self.active_node_mask[I_], RIGHT)
+            if j+dj==0: ti.atomic_or(self.active_node_mask[I_], UP)
+            if j+dj==l_size: ti.atomic_or(self.active_node_mask[I_], DOWN)
+
+            if i+di-1>=0: ti.atomic_or(self.active_node_mask[self._map(l, vec2(i+di-1,j+dj))], RIGHT)
+            if i+di+1<=l_size: ti.atomic_or(self.active_node_mask[self._map(l, vec2(i+di+1,j+dj))], LEFT)
+            if j+dj-1>=0: ti.atomic_or(self.active_node_mask[self._map(l, vec2(i+di,j+dj-1))], DOWN)
+            if j+dj+1<=l_size: ti.atomic_or(self.active_node_mask[self._map(l, vec2(i+di,j+dj+1))], UP)
+
+    @ti.kernel
+    def _mark_T_junction():
+      for i,j in ti.ndrange(self.finest_size+1, self.finest_size+1):
+        if self.active_node_mask[i, j] & 0xF0 > 0:
+          if self.active_node_mask[i, j] & 0x0F == 0x0F: self.active_node_mask[i, j] = ACTIVATED
+          elif self.active_node_mask[i, j] & 0x0F > 0: self.active_node_mask[i, j] = T_JUNCTION
+        else: self.active_node_mask[i, j] = UNACTIVATED
+
+    for l in range(self.level):
+      _accumulate_mask(l)
+    _mark_T_junction()
+  
+  def mark_ghost(self):
+    dir = [[0, -1], [0, 1], [-1, 0], [1, 0]]
+    @ti.func
+    def _heriarchical_check(l, I):
+      res = False
+      while l >= 0:
+        if self.active_cell_mask[l, I] == ACTIVATED:
+          res = True
+          break
+        l -= 1
+        I //= 2
+      return res
+
+    @ti.kernel
+    def _mark_ghost(l : ti.template()):
+      l_size = self.coarsest_size * (2**l)
+      for I in ti.grouped(ti.ndrange(l_size, l_size)):
+        if self.active_cell_mask[l, I] == ACTIVATED:
+          for _ in ti.static(range(4)):
+            I1 = I+dir[_]
+            if all(I1>=0 and I1<l_size) and self.active_cell_mask[l, I1] == UNACTIVATED \
+              and _heriarchical_check(l, I1):
+              tmp_l = l
+              while self.active_cell_mask[tmp_l, I1] != ACTIVATED:
+                ti.atomic_or(self.active_cell_mask[tmp_l, I1], GHOST)
+                for cell_ in ti.grouped(ti.ndrange(2, 2)):
+                  if self.active_node_mask[self._map(tmp_l, I1+cell_)] == UNACTIVATED:
+                    ti.atomic_or(self.active_node_mask[self._map(tmp_l, I1+cell_)], GHOST)
+                tmp_l -= 1
+                I1 //= 2
+
+    for l in reversed(range(self.level)):
+      _mark_ghost(l)
+  
+  @ti.func
+  def get_finest_level_near_particle(self, p):
+    f_l = -1 # finest-level near the particle
+    for l0 in range(self.level):
+      l = self.level-l0-1 # reverse iteration
+      dx = self.coarsest_dx / (2**l)
+      base = (self.x_p[p] / dx + 0.5).cast(int) - 1
+      for dI in ti.grouped(ti.ndrange(2, 2)):
+        if self.active_cell_mask[l, base+dI] == ACTIVATED:
+          f_l = l
+          break
+      if f_l == l: break
+    return f_l
 
   @ti.kernel
-  def _mark_ghost(l : ti.template()):
-    l_size = coarsest_size * (2**l)
+  def reinitialize_level(self, l : ti.template()):
+    l_size = self.coarsest_size * (2**l)
+    for I in ti.grouped(ti.ndrange(l_size+1, l_size+1)):
+      self.ad_grid_m[l, I] = 0
+      self.ad_grid_v[l, I].fill(0.0)
+  
+  @ti.kernel
+  def p2g(self, dt0 : ti.f32):
+    for p in range(self.n_particles):
+      self.fl_p[p] = self.get_finest_level_near_particle(p)
+      f_l = self.fl_p[p]
+
+      dx = self.coarsest_dx / (2**f_l)
+      base = (self.x_p[p] / dx + 0.5).cast(int) - 1
+      trilinear_coordinates = self.x_p[p] / dx - float(base+1)
+
+      # compute stress
+      stress = -dt0 * 0.25 / (self.radius * self.radius * dx) * get_stress(self.F_p[p], self.mu, self.la)
+
+      for dI in ti.grouped(ti.ndrange(2, 2)):
+        for cell_ in ti.grouped(ti.ndrange(2, 2)):
+          weight, g_weight = get_linear_weight(self.radius, trilinear_coordinates, dI, cell_)
+          self.ad_grid_m[f_l, base+dI+cell_] += weight * self.m_p[p]
+          self.ad_grid_v[f_l, base+dI+cell_] += weight * (self.m_p[p] * self.v_p[p]) + stress @ g_weight
+    
+  @ti.kernel
+  def g2p(self, dt0 : ti.f32):
+    for p in range(self.n_particles):
+      f_l = self.fl_p[p]
+      dx = self.coarsest_dx / (2**f_l)
+      base = (self.x_p[p] / dx + 0.5).cast(int) - 1
+      trilinear_coordinates = self.x_p[p] / dx - float(base+1)
+
+      new_v = ti.Vector.zero(float, 2)
+      new_G = ti.Matrix.zero(float, 2, 2)
+
+      for dI in ti.grouped(ti.ndrange(2, 2)):
+        for cell_ in ti.grouped(ti.ndrange(2, 2)):
+          weight, g_weight = get_linear_weight(self.radius, trilinear_coordinates, dI, cell_)
+          new_v += self.ad_grid_v[f_l, base+dI+cell_] * weight
+          new_G += self.ad_grid_v[f_l, base+dI+cell_].outer_product(g_weight)
+        
+      self.v_p[p] = new_v
+      self.x_p[p] += dt0 * self.v_p[p] # advection
+      self.F_p[p] = (ti.Matrix.identity(float, 2) + dt0 * 0.25 / (self.radius * self.radius * dx) * new_G) @ self.F_p[p]
+
+  @ti.kernel
+  def grid_op(self, l : ti.template(), dt0 : ti.f32):
+    l_size = self.coarsest_size * (2**l)+1
     for I in ti.grouped(ti.ndrange(l_size, l_size)):
-      if active_cell_mask[l, I] == ACTIVATED:
-        for _ in ti.static(range(4)):
-          I1 = I+dir[_]
-          if all(I1>=0 and I1<l_size) and active_cell_mask[l, I1] == UNACTIVATED \
-            and _heriarchical_check(l, I1):
-            tmp_l = l
-            while active_cell_mask[tmp_l, I1] != ACTIVATED:
-              ti.atomic_or(active_cell_mask[tmp_l, I1], GHOST)
-              for cell_ in ti.grouped(ti.ndrange(2, 2)):
-                if active_node_mask[_map(tmp_l, I1+cell_)] == UNACTIVATED:
-                  ti.atomic_or(active_node_mask[_map(tmp_l, I1+cell_)], GHOST)
-              tmp_l -= 1
-              I1 //= 2
-            
-
-  for l in reversed(range(level)):
-    _mark_ghost(l)
-
-mark_ghost()
-
-@ti.func
-def get_finest_level_near_particle(p):
-  f_l = -1 # finest-level near the particle
-  for l0 in range(level):
-    l = level-l0-1 # reverse iteration
-    dx = coarsest_dx / (2**l)
-    base = (x_p[p] / dx + 0.5).cast(int) - 1
-    for dI in ti.grouped(ti.ndrange(2, 2)):
-      if active_cell_mask[l, base+dI] == ACTIVATED:
-        f_l = l
-        break
-    if f_l == l: break
-  return f_l
-
-# --------------------------------
-
-dt = 2e-5
-gravity = ti.Vector([0.0, -100.0])
-
-# -------- particle data --------
-radius = 0.5 # Half-cell; this reflects what the radius is at the finest level of adaptivity
-p_mass = 1.0
-n_particles = 20000
-E, nu = 5e3, 0.2  # Young's modulus and Poisson's ratio
-mu, la = E / (2 * (1 + nu)), E * nu / ((1 + nu) * (1 - 2 * nu))  # Lame parameters
-
-x_p = ti.Vector.field(2, ti.f32, shape=n_particles)
-v_p = ti.Vector.field(2, ti.f32, shape=n_particles)
-F_p = ti.Matrix.field(2, 2, ti.f32, shape=n_particles)
-m_p = ti.field(ti.f32, shape=n_particles)
-
-# auxiliary data
-fl_p = ti.field(ti.i32, shape=n_particles)
-
-@ti.kernel
-def initialize_particle():
-  for i in range(n_particles):
-    x_p[i] = [ti.random() * 0.6 + 0.2, ti.random() * 0.4 + 0.3]
-    v_p[i] = [0, -20.0]
-    F_p[i] = ti.Matrix.identity(ti.f32, 2)
-    m_p[i] = p_mass
-
-initialize_particle()
-# --------------------------------
-
-@ti.kernel
-def reinitialize_level(l : ti.template()):
-  l_size = coarsest_size * (2**l)
-  for I in ti.grouped(ti.ndrange(l_size+1, l_size+1)):
-    ad_grid_m[l, I] = 0
-    ad_grid_v[l, I].fill(0.0)
-
-@ti.func
-def get_weight(trilinear_coordinates, dI, cell_):
-  bmin = ti.math.clamp(trilinear_coordinates+(1-dI)-radius, 0.0, 1.0)
-  bmax = ti.math.clamp(trilinear_coordinates+(1-dI)+radius, 0.0, 1.0)
-  w = ti.math.vec2(0.0)
-  g_w = ti.math.vec2(0.0)
-  for v in ti.static(range(2)):
-    mx, mn=0.0, 0.0
-    if cell_[v]:
-      mx = bmax[v]
-      mn = bmin[v]
-    else: 
-      mx = 1.-bmin[v]
-      mn = 1.-bmax[v]
-    w[v] = mx**2-mn**2
-    g_w[v] = (mx-mn) if cell_[v] else (mn-mx)
-
-  weight = w[0] * w[1] / (4.0 * (radius*2.0)**2)
-  g_weight = ti.Vector([g_w[0] * w[1], w[0] * g_w[1]]) / (2.0 * (radius*2.0)**2)
-  return weight, g_weight
-
-@ti.func
-def get_stress(F):
-  U, sig, V = ti.svd(F)
-  J = F.determinant()
-  stress = 2 * mu * (F - U @ V.transpose()) @ F.transpose() + ti.Matrix.identity(float, 2) * la * J * (J - 1)
-  return stress
-
-@ti.kernel
-def p2g():
-  for p in range(n_particles):
-    fl_p[p] = get_finest_level_near_particle(p)
-    f_l = fl_p[p]
-
-    dx = coarsest_dx / (2**f_l)
-    base = (x_p[p] / dx + 0.5).cast(int) - 1
-    trilinear_coordinates = x_p[p] / dx - float(base+1)
-
-    # compute stress
-    stress = -dt * 0.25 / (radius * radius * dx) * get_stress(F_p[p])
-
-    for dI in ti.grouped(ti.ndrange(2, 2)):
-      for cell_ in ti.grouped(ti.ndrange(2, 2)):
-        weight, g_weight = get_weight(trilinear_coordinates, dI, cell_)
-        ad_grid_m[f_l, base+dI+cell_] += weight * m_p[p]
-        # ad_grid_v[f_l, base+dI+cell_] += weight * m_p[p] * v_p[p]
-        ad_grid_v[f_l, base+dI+cell_] += weight * (m_p[p] * v_p[p]) + stress @ g_weight
-
-@ti.kernel
-def g2p():
-  for p in range(n_particles):
-    f_l = fl_p[p]
-    dx = coarsest_dx / (2**f_l)
-    base = (x_p[p] / dx + 0.5).cast(int) - 1
-    trilinear_coordinates = x_p[p] / dx - float(base+1)
-
-    new_v = ti.Vector.zero(float, 2)
-    new_G = ti.Matrix.zero(float, 2, 2)
-
-    for dI in ti.grouped(ti.ndrange(2, 2)):
-      for cell_ in ti.grouped(ti.ndrange(2, 2)):
-        weight, g_weight = get_weight(trilinear_coordinates, dI, cell_)
-        new_v += ad_grid_v[f_l, base+dI+cell_] * weight
-        new_G += ad_grid_v[f_l, base+dI+cell_].outer_product(g_weight)
-      
-    v_p[p] = new_v
-    x_p[p] += dt * v_p[p] # advection
-    F_p[p] = (ti.Matrix.identity(float, 2) + dt * 0.25 / (radius * radius * dx) * new_G) @ F_p[p]
-
-boundary_gap = 2
-@ti.kernel
-def grid_op(l : ti.template()):
-  l_size = coarsest_size * (2**l)+1
-  for I in ti.grouped(ti.ndrange(l_size, l_size)):
-    if ad_grid_m[l, I] > 0 and active_node_mask[_map(l, I)] == ACTIVATED: # only on real degree-of-freedom
-      ad_grid_v[l, I] /= ad_grid_m[l, I]
-      ad_grid_v[l, I] += gravity * dt
-      for v in ti.static(range(2)):
-        if _map(l, I)[v] < boundary_gap * 2**(level-1) or _map(l, I)[v] > finest_size - boundary_gap * 2**(level-1):
-          ad_grid_v[l, I][v] = 0
-
-@ti.kernel
-def grid_restriction(l : ti.template()):
-  l_size = coarsest_size * (2**l)
-  for I in ti.grouped(ti.ndrange(l_size+1, l_size+1)):
-    if (active_node_mask[_map(l, I)] == ACTIVATED or \
-        active_node_mask[_map(l, I)] == T_JUNCTION or \
-        active_node_mask[_map(l, I)] == GHOST):
-      I2 = I * 2
-      for dI in ti.grouped(ti.ndrange((-1, 2), (-1, 2))):
-        if all(I2+dI>=0) and all(I2+dI <= l_size*2) and \
-            active_node_mask[_map(l+1, I2+dI)] == T_JUNCTION or \
-            active_node_mask[_map(l+1, I2+dI)] == GHOST or \
-            (active_node_mask[_map(l+1, I2+dI)] == ACTIVATED and all(dI==0)): # always count self
-          weight = 0.5**float(ti.abs(dI).sum())
-          ad_grid_m[l, I] += ad_grid_m[l+1, I2+dI] * weight
-          ad_grid_v[l, I] += ad_grid_v[l+1, I2+dI] * weight
-
-@ti.kernel
-def grid_prolongation(l : ti.template()):
-  l0 = l-1
-  l0_size = coarsest_size * (2**l0)
-  l_size = l0_size * 2
-  for I in ti.grouped(ti.ndrange(l_size+1, l_size+1)):
-    if (active_node_mask[_map(l, I)] == T_JUNCTION or active_node_mask[_map(l, I)] == GHOST or active_node_mask[_map(l, I)] == UNACTIVATED) or \
-      all(I % 2 == 0): # non real-DOF should get value from real-DOF
-      ad_grid_v[l, I].fill(0.0)
-
-  for I in ti.grouped(ti.ndrange(l0_size+1, l0_size+1)):
-    if (active_node_mask[_map(l0, I)] == ACTIVATED or active_node_mask[_map(l0, I)] == T_JUNCTION or active_node_mask[_map(l0, I)] == GHOST):
-      I2 = I * 2
-      for dI in ti.grouped(ti.ndrange((-1, 2), (-1, 2))):
-        if all(I2+dI>=0) and all(I2+dI <= l_size*2) and \
-            active_node_mask[_map(l, I2+dI)] == T_JUNCTION or \
-            active_node_mask[_map(l, I2+dI)] == GHOST or \
-            (active_node_mask[_map(l, I2+dI)] == ACTIVATED and all(dI==0)): # always count self
-          weight = 0.5**float(ti.abs(dI).sum())
-          ad_grid_v[l, I2+dI] += ad_grid_v[l0, I] * weight
-
-
-# ------- visualization -------
-res = 768
-bg_img = ti.Vector.field(3, ti.f32, shape=(res, res))
-window = ti.ui.Window('Adaptive GIMP', res = (res, res))
-canvas = window.get_canvas()
-
-@ti.kernel
-def visualize_mask():
-  for i, j in ti.ndrange(res, res):
-    bg_img[i, j].fill(0.0)
-    for l in range(level):
-      scale = res // (coarsest_size * (2**l))
-      if active_cell_mask[l, i // scale, j // scale] == ACTIVATED: # normal activated cell
-        bg_img[i, j] = ti.Vector([0.28, 0.68, 0.99])
-        if i % scale == 0 or i % scale == scale-1 or j % scale == 0 or j % scale == scale-1:
-          bg_img[i, j] = ti.Vector([0.18, 0.58, 0.88])
-      elif active_cell_mask[l, i // scale, j // scale] == GHOST: # ghost cell
-        bg_img[i, j] = ti.Vector([0, 0, 1.0])
-        if i % scale == 0 or i % scale == scale-1 or j % scale == 0 or j % scale == scale-1:
-          bg_img[i, j] = ti.Vector([0, 0, 0.77])
+      if self.ad_grid_m[l, I] > 0 and self.active_node_mask[self._map(l, I)] == ACTIVATED: # only on real degree-of-freedom
+        self.ad_grid_v[l, I] /= self.ad_grid_m[l, I]
+        self.ad_grid_v[l, I] += self.gravity * dt0
+        for v in ti.static(range(2)):
+          if self._map(l, I)[v] < self.boundary_gap * 2**(self.level-1) or \
+             self._map(l, I)[v] > self.finest_size - self.boundary_gap * 2**(self.level-1):
+            self.ad_grid_v[l, I][v] = 0
   
-  for i, j in ti.ndrange(res, res):
-    fscale = res // (finest_size)
-    if i % fscale == 0 and j % fscale == 0:
-      if active_node_mask[i // fscale, j // fscale] == ACTIVATED:
-        bg_img[i, j] = ti.Vector([1.0, 0.0, 0.0])
-        for di, dj in ti.ndrange((-1, 2), (-1, 2)):
-          if 0<=i+di < res and 0<=j+dj < res:
-            bg_img[i+di, j+dj] = ti.Vector([1.0, 0.0, 0.0])
-      elif active_node_mask[i // fscale, j // fscale] == T_JUNCTION:
-        bg_img[i, j] = ti.Vector([0.0, 1.0, 0.0])
-        for di, dj in ti.ndrange((-1, 2), (-1, 2)):
-          if 0<=i+di < res and 0<=j+dj < res:
-            bg_img[i+di, j+dj] = ti.Vector([0.0, 1.0, 0.0])
-      elif active_node_mask[i // fscale, j // fscale] == GHOST:
-        bg_img[i, j] = ti.Vector([0.0, 0.0, 0.55])
-        for di, dj in ti.ndrange((-1, 2), (-1, 2)):
-          if 0<=i+di < res and 0<=j+dj < res:
-            bg_img[i+di, j+dj] = ti.Vector([0.0, 0.0, 0.55])
+  @ti.kernel
+  def grid_restriction(self, l : ti.template()):
+    l_size = self.coarsest_size * (2**l)
+    for I in ti.grouped(ti.ndrange(l_size+1, l_size+1)):
+      if (self.active_node_mask[self._map(l, I)] == ACTIVATED or \
+          self.active_node_mask[self._map(l, I)] == T_JUNCTION or \
+          self.active_node_mask[self._map(l, I)] == GHOST):
+        I2 = I * 2
+        for dI in ti.grouped(ti.ndrange((-1, 2), (-1, 2))):
+          if all(I2+dI>=0) and all(I2+dI <= l_size*2) and \
+              self.active_node_mask[self._map(l+1, I2+dI)] == T_JUNCTION or \
+              self.active_node_mask[self._map(l+1, I2+dI)] == GHOST or \
+              (self.active_node_mask[self._map(l+1, I2+dI)] == ACTIVATED and all(dI==0)): # always count self
+            weight = 0.5**float(ti.abs(dI).sum())
+            self.ad_grid_m[l, I] += self.ad_grid_m[l+1, I2+dI] * weight
+            self.ad_grid_v[l, I] += self.ad_grid_v[l+1, I2+dI] * weight
 
+  @ti.kernel
+  def grid_prolongation(self, l : ti.template()):
+    l0 = l-1
+    l0_size = self.coarsest_size * (2**l0)
+    l_size = l0_size * 2
+    for I in ti.grouped(ti.ndrange(l_size+1, l_size+1)):
+      if (self.active_node_mask[self._map(l, I)] == T_JUNCTION or \
+          self.active_node_mask[self._map(l, I)] == GHOST or \
+          self.active_node_mask[self._map(l, I)] == UNACTIVATED) or \
+          all(I % 2 == 0): # non real-DOF should get value from real-DOF
+        self.ad_grid_v[l, I].fill(0.0)
 
-def show():
-  visualize_mask()
-  canvas.set_image(bg_img)
-  canvas.circles(x_p, radius=0.006, color=(0.93, 0.33, 0.23))
-  window.show()
+    for I in ti.grouped(ti.ndrange(l0_size+1, l0_size+1)):
+      if (self.active_node_mask[self._map(l0, I)] == ACTIVATED or \
+          self.active_node_mask[self._map(l0, I)] == T_JUNCTION or \
+          self.active_node_mask[self._map(l0, I)] == GHOST):
+        I2 = I * 2
+        for dI in ti.grouped(ti.ndrange((-1, 2), (-1, 2))):
+          if all(I2+dI>=0) and all(I2+dI <= l_size*2) and \
+              self.active_node_mask[self._map(l, I2+dI)] == T_JUNCTION or \
+              self.active_node_mask[self._map(l, I2+dI)] == GHOST or \
+              (self.active_node_mask[self._map(l, I2+dI)] == ACTIVATED and all(dI==0)): # always count self
+            weight = 0.5**float(ti.abs(dI).sum())
+            self.ad_grid_v[l, I2+dI] += self.ad_grid_v[l0, I] * weight
 
-# --------------------------------
+  def substep(self, dt0):
+    for l in range(self.level):
+        self.reinitialize_level(l)
+    
+    self.p2g(dt0)
+    
+    for l in reversed(range(self.level)):
+      if l != self.level - 1: self.grid_restriction(l)
 
-def substep():
-  for l in range(level):
-      reinitialize_level(l)
-  
-  p2g()
-  
-  for l in reversed(range(level)):
-    if l != level - 1: grid_restriction(l)
+    for l in range(self.level):
+        self.grid_op(l, dt0)
+    
+    for l in range(self.level):
+      if l != 0: self.grid_prolongation(l)
 
-  for l in range(level):
-      grid_op(l)
-  
-  for l in range(level):
-    if l != 0: grid_prolongation(l)
-
-  g2p()
-
-while True:
-  for i in range(20):
-    substep()
-
-  show()
+    self.g2p(dt0)
