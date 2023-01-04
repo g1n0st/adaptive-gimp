@@ -59,48 +59,53 @@ def initialize_mask2():
 
 initialize_mask1()
 
-'''
-      0x08
-       |
-0x01 ------ 0x02
-       |
-      0x04
-'''
-REAL = 0xF0
-UP = 0x08
-DOWN = 0x04
-LEFT = 0x01
-RIGHT = 0x02
-@ti.kernel
-def accumulate_mask(l : ti.template()):
-  l_size = coarsest_size * (2**l)
-  for i,j in ti.ndrange(l_size, l_size):
-    if active_cell_mask[l, i,j] == ACTIVATED:
-      for di,dj in ti.ndrange(2, 2):
-        I_ = _map(l, vec2(i+di,j+dj))
-        ti.atomic_or(active_node_mask[I_], REAL)
+def mark_T_junction():
+  '''
+        0x08
+        |
+  0x01 ------ 0x02
+        |
+        0x04
+  '''
+  REAL = 0xF0
+  UP = 0x08
+  DOWN = 0x04
+  LEFT = 0x01
+  RIGHT = 0x02
+  @ti.kernel
+  def accumulate_mask(l : ti.template()):
+    l_size = coarsest_size * (2**l)
+    for i,j in ti.ndrange(l_size, l_size):
+      if active_cell_mask[l, i,j] == ACTIVATED:
+        for di,dj in ti.ndrange(2, 2):
+          I_ = _map(l, vec2(i+di,j+dj))
+          ti.atomic_or(active_node_mask[I_], REAL)
 
-        if i+di==0: ti.atomic_or(active_node_mask[I_], LEFT)
-        if i+di==l_size: ti.atomic_or(active_node_mask[I_], RIGHT)
-        if j+dj==0: ti.atomic_or(active_node_mask[I_], UP)
-        if j+dj==l_size: ti.atomic_or(active_node_mask[I_], DOWN)
+          if i+di==0: ti.atomic_or(active_node_mask[I_], LEFT)
+          if i+di==l_size: ti.atomic_or(active_node_mask[I_], RIGHT)
+          if j+dj==0: ti.atomic_or(active_node_mask[I_], UP)
+          if j+dj==l_size: ti.atomic_or(active_node_mask[I_], DOWN)
 
-        if i+di-1>=0: ti.atomic_or(active_node_mask[_map(l, vec2(i+di-1,j+dj))], RIGHT)
-        if i+di+1<=l_size: ti.atomic_or(active_node_mask[_map(l, vec2(i+di+1,j+dj))], LEFT)
-        if j+dj-1>=0: ti.atomic_or(active_node_mask[_map(l, vec2(i+di,j+dj-1))], DOWN)
-        if j+dj+1<=l_size: ti.atomic_or(active_node_mask[_map(l, vec2(i+di,j+dj+1))], UP)
+          if i+di-1>=0: ti.atomic_or(active_node_mask[_map(l, vec2(i+di-1,j+dj))], RIGHT)
+          if i+di+1<=l_size: ti.atomic_or(active_node_mask[_map(l, vec2(i+di+1,j+dj))], LEFT)
+          if j+dj-1>=0: ti.atomic_or(active_node_mask[_map(l, vec2(i+di,j+dj-1))], DOWN)
+          if j+dj+1<=l_size: ti.atomic_or(active_node_mask[_map(l, vec2(i+di,j+dj+1))], UP)
 
-@ti.kernel
-def mark_mask():
-  for i,j in ti.ndrange(finest_size+1, finest_size+1):
-    if active_node_mask[i, j] & 0xF0 > 0:
-      if active_node_mask[i, j] & 0x0F == 0x0F: active_node_mask[i, j] = ACTIVATED
-      elif active_node_mask[i, j] & 0x0F > 0: active_node_mask[i, j] = T_JUNCTION
-    else: active_node_mask[i, j] = UNACTIVATED
+  @ti.kernel
+  def mark_mask():
+    for i,j in ti.ndrange(finest_size+1, finest_size+1):
+      if active_node_mask[i, j] & 0xF0 > 0:
+        if active_node_mask[i, j] & 0x0F == 0x0F: active_node_mask[i, j] = ACTIVATED
+        elif active_node_mask[i, j] & 0x0F > 0: active_node_mask[i, j] = T_JUNCTION
+      else: active_node_mask[i, j] = UNACTIVATED
 
-for l in range(level):
-  accumulate_mask(l)
-mark_mask()
+  for l in range(level):
+    accumulate_mask(l)
+  mark_mask()
+
+mark_T_junction()
+
+
 
 @ti.kernel
 def initialize_level_near_node():
@@ -281,7 +286,10 @@ def grid_restriction(l : ti.template()):
   l_size = coarsest_size * (2**l)
   for I in ti.grouped(ti.ndrange(l_size+1, l_size+1)):
     # TODO FIXME(changyu): ghost cell may also need to act as conduits ...
-    if (active_node_mask[_map(l, I)] == ACTIVATED or active_node_mask[_map(l, I)] == T_JUNCTION) and min_level_near_node[_map(l, I)] <= l:
+    if (active_node_mask[_map(l, I)] == ACTIVATED or \
+        active_node_mask[_map(l, I)] == T_JUNCTION or \
+        active_node_mask[_map(l, I)] == GHOST) \
+      and min_level_near_node[_map(l, I)] <= l:
       I2 = I * 2
       for dI in ti.grouped(ti.ndrange((-1, 2), (-1, 2))):
         if all(I2+dI>=0) and all(I2+dI <= l_size*2) and \
