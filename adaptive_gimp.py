@@ -62,7 +62,7 @@ class AdaptiveGIMP:
     def _accumulate_mask(l : ti.template()):
       l_size = self.coarsest_size * (2**l)
       D = ti.Matrix.identity(int, self.dim)
-      for I in ti.grouped(ti.ndrange(*((l_size, ) * self.dim))):
+      for I in ti.grouped(self.active_cell_mask[l]):
         if self.active_cell_mask[l][I] == ACTIVATED:
           for dI in ti.grouped(ti.ndrange(*((2, ) * self.dim))):
             ti.atomic_or(self.active_node_mask[self._map(l, I+dI)], 0xF00)
@@ -74,7 +74,7 @@ class AdaptiveGIMP:
 
     @ti.kernel
     def _mark_T_junction():
-      for I in ti.grouped(ti.ndrange(*((self.finest_size+1, ) * self.dim))):
+      for I in ti.grouped(self.active_node_mask):
         if self.active_node_mask[I] & 0xF00 > 0:
           if self.active_node_mask[I] & 0xFF == (1<<self.dim*2)-1: self.active_node_mask[I] = ACTIVATED
           elif self.active_node_mask[I] & 0xFF > 0: self.active_node_mask[I] = T_JUNCTION
@@ -94,7 +94,7 @@ class AdaptiveGIMP:
     def _mark_ghost(l : ti.template()):
       l_size = self.coarsest_size * (2**l)
       D = ti.Matrix.identity(int, self.dim)
-      for I in ti.grouped(ti.ndrange(*((l_size, ) * self.dim))):
+      for I in ti.grouped(self.active_cell_mask[l]):
         if self.active_cell_mask[l][I] == ACTIVATED:
           for _ in ti.static(range(self.dim * 2)):
             I1 = I+D[:, _//2]*(-1 if _%2 else 1)
@@ -122,7 +122,7 @@ class AdaptiveGIMP:
   @ti.kernel
   def reinitialize_level(self, l : ti.template()):
     l_size = self.coarsest_size * (2**l)
-    for I in ti.grouped(ti.ndrange(*((l_size+1, ) * self.dim))):
+    for I in ti.grouped(self.ad_grid_m[l]):
       self.ad_grid_m[l][I] = 0
       self.ad_grid_v[l][I].fill(0.0)
 
@@ -175,7 +175,7 @@ class AdaptiveGIMP:
   @ti.kernel
   def grid_op(self, l : ti.template(), dt0 : ti.f32):
     l_size = self.coarsest_size * (2**l)
-    for I in ti.grouped(ti.ndrange(*((l_size+1, ) * self.dim))):
+    for I in ti.grouped(self.ad_grid_m[l]):
       if self.ad_grid_m[l][I] > 0 and self.active_node_mask[self._map(l, I)] == ACTIVATED: # only on real degree-of-freedom
         self.ad_grid_v[l][I] /= self.ad_grid_m[l][I]
         self.ad_grid_v[l][I] += self.gravity * dt0
@@ -183,36 +183,36 @@ class AdaptiveGIMP:
           if self._map(l, I)[v] < self.boundary_gap * 2**(self.level-1) or \
              self._map(l, I)[v] > self.finest_size - self.boundary_gap * 2**(self.level-1):
             self.ad_grid_v[l][I][v] = 0
-  
+
   @ti.kernel
   def grid_restriction(self, l : ti.template()):
     l_size = self.coarsest_size * (2**l)
-    for I in ti.grouped(ti.ndrange(*((l_size+1, ) * self.dim))):
-      if (self.active_node_mask[self._map(l, I)] == ACTIVATED or \
+    for I in ti.grouped(self.ad_grid_v[l]):
+      if (self.active_node_mask[self._map(l, I)] == ACTIVATED and all(I % 2 == 0)) or \
           self.active_node_mask[self._map(l, I)] == T_JUNCTION or \
-          self.active_node_mask[self._map(l, I)] == GHOST):
-        I2 = I * 2
+          self.active_node_mask[self._map(l, I)] == GHOST:
         for dI in ti.grouped(ti.ndrange(*(((-1, 2), ) * self.dim))):
-          if all(I2+dI>=0) and all(I2+dI <= l_size*2) and \
-              self.active_node_mask[self._map(l+1, I2+dI)] == T_JUNCTION or \
-              self.active_node_mask[self._map(l+1, I2+dI)] == GHOST or \
-              (self.active_node_mask[self._map(l+1, I2+dI)] == ACTIVATED and all(dI==0)): # always count self
-            weight = 0.5**float(ti.abs(dI).sum())
-            self.ad_grid_m[l][I] += self.ad_grid_m[l+1][I2+dI] * weight
-            self.ad_grid_v[l][I] += self.ad_grid_v[l+1][I2+dI] * weight
+          if all(I+dI>=0) and all(I+dI <= l_size) and all ((I+dI) % 2 == 0):
+            I0 = (I+dI)//2
+            if self.active_node_mask[self._map(l-1, I0)] == ACTIVATED or \
+               self.active_node_mask[self._map(l-1, I0)] == T_JUNCTION or \
+               self.active_node_mask[self._map(l-1, I0)] == GHOST:
+              weight = 0.5**float(ti.abs(dI).sum())
+              self.ad_grid_m[l-1][I0] += self.ad_grid_m[l][I] * weight
+              self.ad_grid_v[l-1][I0] += self.ad_grid_v[l][I] * weight
 
   @ti.kernel
   def grid_prolongation(self, l : ti.template()):
     l0 = ti.static(l-1)
     l0_size = self.coarsest_size * (2**l0)
     l_size = l0_size * 2
-    for I in ti.grouped(ti.ndrange(*((l_size+1, ) * self.dim))):
+    for I in ti.grouped(self.ad_grid_v[l]):
       if self.active_node_mask[self._map(l, I)] == T_JUNCTION or \
          self.active_node_mask[self._map(l, I)] == GHOST or \
          all(I % 2 == 0): # non real-DOF should get value from real-DOF
         self.ad_grid_v[l][I].fill(0.0)
 
-    for I in ti.grouped(ti.ndrange(*((l0_size+1, ) * self.dim))):
+    for I in ti.grouped(self.ad_grid_v[l0]):
       if (self.active_node_mask[self._map(l0, I)] == ACTIVATED or \
           self.active_node_mask[self._map(l0, I)] == T_JUNCTION or \
           self.active_node_mask[self._map(l0, I)] == GHOST):
@@ -233,9 +233,9 @@ class AdaptiveGIMP:
     self.level_mapping()
     for l in range(self.level):
       self.p2g(l, dt0)
-    
+
     for l in reversed(range(self.level)):
-      if l != self.level - 1: self.grid_restriction(l)
+      if l != 0: self.grid_restriction(l)
 
     for l in range(self.level):
         self.grid_op(l, dt0)
