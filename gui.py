@@ -10,22 +10,18 @@ class GUI:
       self.canvas = self.window.get_canvas()
 
     @ti.kernel
-    def visualize_mask(self,
-                      level : ti.template(), 
-                      coarsest_size : ti.template(), 
-                      active_node_mask : ti.template(),
-                      active_cell_mask : ti.template()):
+    def visualize_mask(self, simulator : ti.template()):
 
-      finest_size = coarsest_size * (2**(level-1))
+      finest_size = simulator.coarsest_size * (2**(simulator.level-1))
       for i, j in ti.ndrange(self.res, self.res):
         self.bg_img[i, j].fill(0.0)
-        for l in range(level):
-          scale = self.res // (coarsest_size * (2**l))
-          if active_cell_mask[l, i // scale, j // scale] == ACTIVATED: # normal activated cell
+        for l in ti.static(range(simulator.level)):
+          scale = self.res // (simulator.coarsest_size * (2**l))
+          if simulator.active_cell_mask[l][i // scale, j // scale] == ACTIVATED: # normal activated cell
             self.bg_img[i, j] = ti.Vector([0.28, 0.68, 0.99])
             if i % scale == 0 or i % scale == scale-1 or j % scale == 0 or j % scale == scale-1:
               self.bg_img[i, j] = ti.Vector([0.18, 0.58, 0.88])
-          elif active_cell_mask[l, i // scale, j // scale] == GHOST: # ghost cell
+          elif simulator.active_cell_mask[l][i // scale, j // scale] == GHOST: # ghost cell
             self.bg_img[i, j] = ti.Vector([0, 0, 1.0])
             if i % scale == 0 or i % scale == scale-1 or j % scale == 0 or j % scale == scale-1:
               self.bg_img[i, j] = ti.Vector([0, 0, 0.77])
@@ -33,22 +29,21 @@ class GUI:
       for i, j in ti.ndrange(self.res, self.res):
         fscale = self.res // (finest_size)
         if i % fscale == 0 and j % fscale == 0:
-          if active_node_mask[i // fscale, j // fscale] == ACTIVATED:
+          if simulator.active_node_mask[i // fscale, j // fscale] == ACTIVATED:
             for di, dj in ti.ndrange((-1, 2), (-1, 2)):
               if 0<=i+di < self.res and 0<=j+dj < self.res:
                 self.bg_img[i+di, j+dj] = ti.Vector([1.0, 0.0, 0.0])
-          elif active_node_mask[i // fscale, j // fscale] == T_JUNCTION:
+          elif simulator.active_node_mask[i // fscale, j // fscale] == T_JUNCTION:
             for di, dj in ti.ndrange((-1, 2), (-1, 2)):
               if 0<=i+di < self.res and 0<=j+dj < self.res:
                 self.bg_img[i+di, j+dj] = ti.Vector([0.0, 1.0, 0.0])
-          elif active_node_mask[i // fscale, j // fscale] == GHOST:
+          elif simulator.active_node_mask[i // fscale, j // fscale] == GHOST:
             for di, dj in ti.ndrange((-1, 2), (-1, 2)):
               if 0<=i+di < self.res and 0<=j+dj < self.res:
                 self.bg_img[i+di, j+dj] = ti.Vector([0.0, 0.0, 0.55])
 
-
     def show(self, simulator):
-      self.visualize_mask(simulator.level, simulator.coarsest_size, simulator.active_node_mask, simulator.active_cell_mask)
+      self.visualize_mask(simulator)
       self.canvas.set_image(self.bg_img)
       self.canvas.circles(simulator.x_p, radius=0.006, color=(0.93, 0.33, 0.23))
       self.window.show()
