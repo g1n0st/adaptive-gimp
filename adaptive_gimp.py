@@ -3,7 +3,11 @@ from utils import *
 
 @ti.data_oriented
 class AdaptiveGIMP:
-  def __init__(self, dim, level, coarsest_size, grid_initializer, particle_initializer):
+  def __init__(self, 
+               dim, 
+               level, coarsest_size,
+               n_particles,
+               grid_initializer, particle_initializer):
     self.dim = dim
     # ----- adaptive grid data ------
     self.level = level
@@ -13,7 +17,7 @@ class AdaptiveGIMP:
     self.boundary_gap = 3
 
     # NOTE: 0-coarsest, (level-1)-finest
-    self.active_node_mask = ti.field(ti.i32, shape=(self.finest_size+1, self.finest_size+1))
+    self.active_node_mask = ti.field(ti.i32, shape=(self.finest_size+1, ) * self.dim)
 
     self.leaf_size = 4
     self.grid = []
@@ -37,8 +41,8 @@ class AdaptiveGIMP:
     # -------- particle data --------
     self.radius = 0.5 # Half-cell; this reflects what the radius is at the finest level of adaptivity
     self.p_mass = 1.0
-    self.gravity = ti.Vector([0.0, -100.0])
-    self.n_particles = 20000
+    self.gravity = ti.Vector([-100.0 if _ == 1 else 0.0 for _ in range(dim)])
+    self.n_particles = n_particles
     E, nu = 5e3, 0.2  # Young's modulus and Poisson's ratio
     self.mu, self.la = E / (2 * (1 + nu)), E * nu / ((1 + nu) * (1 - 2 * nu))  # Lame parameters
 
@@ -49,7 +53,7 @@ class AdaptiveGIMP:
     self.fl_p = ti.field(ti.i32, shape=self.n_particles) # auxiliary data
     self.level_block = ti.root.dense(ti.i, self.level)
     self.pid = ti.field(int)
-    self.level_block.dynamic(ti.j, self.n_particles, chunk_size = 16 ** (2**self.dim)).place(self.pid)
+    self.level_block.dynamic(ti.j, self.n_particles, chunk_size = 16 * (2**self.dim)).place(self.pid)
 
     grid_initializer(self)
     self.mark_T_junction()

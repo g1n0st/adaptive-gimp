@@ -7,8 +7,6 @@ ACTIVATED = 1
 GHOST = 2
 T_JUNCTION = 3
 
-dt = 2e-5
-
 @ti.func
 def get_stress(dim : ti.template(), F, mu, la):
   U, sig, V = ti.svd(F)
