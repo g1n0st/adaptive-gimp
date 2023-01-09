@@ -10,22 +10,29 @@ class AdaptiveGIMP:
     self.coarsest_size = coarsest_size
     self.coarsest_dx = 1 / self.coarsest_size
     self.finest_size = self.coarsest_size*(2**(self.level-1))
-    self.boundary_gap = 2
+    self.boundary_gap = 3
 
     # NOTE: 0-coarsest, (level-1)-finest
     self.active_node_mask = ti.field(ti.i32, shape=(self.finest_size+1, self.finest_size+1))
 
+    self.leaf_size = 4
+    self.grid = []
+    self.dense_block = []
     self.block = []
     self.active_cell_mask = []
     self.ad_grid_v = []
     self.ad_grid_m = []
     for l in range(level):
       l_size = coarsest_size * (2**l)
-      self.block.append(ti.root.dense(ti.ij if self.dim == 2 else ti.ijk, (l_size+1, ) * self.dim))
+      leaf_size = self.leaf_size * (2**l)
+      self.dense_block.append(ti.root.dense(ti.ij if self.dim == 2 else ti.ijk, (l_size+1, ) * self.dim))
+      self.grid.append(ti.root.pointer(ti.ij if self.dim == 2 else ti.ijk, (align_size(l_size//leaf_size+1, 4), ) * self.dim))
+      self.block.append(self.grid[l].dense(ti.ij if self.dim == 2 else ti.ijk, leaf_size))
       self.active_cell_mask.append(ti.field(int))
       self.ad_grid_v.append(ti.Vector.field(self.dim, float))
       self.ad_grid_m.append(ti.field(float))
-      self.block[l].place(self.active_cell_mask[l], self.ad_grid_v[l], self.ad_grid_m[l])
+      self.dense_block[l].place(self.active_cell_mask[l])
+      self.block[l].place(self.ad_grid_v[l], self.ad_grid_m[l])
 
     # -------- particle data --------
     self.radius = 0.5 # Half-cell; this reflects what the radius is at the finest level of adaptivity
@@ -142,11 +149,11 @@ class AdaptiveGIMP:
       trilinear_coordinates = self.x_p[p] / dx - float(base+1)
 
       # compute stress
-      stress = -dt0 * (0.5**self.dim) / ((self.radius**self.dim) * dx) * get_stress(self.F_p[p], self.mu, self.la)
+      stress = -dt0 * (0.5**self.dim) / ((self.radius**self.dim) * dx) * get_stress(self.dim, self.F_p[p], self.mu, self.la)
 
       for dI in ti.grouped(ti.ndrange(*((2, ) * self.dim))):
         for cell_ in ti.grouped(ti.ndrange(*((2, ) * self.dim))):
-          weight, g_weight = get_linear_weight(self.radius, trilinear_coordinates, dI, cell_)
+          weight, g_weight = get_linear_weight(self.dim, self.radius, trilinear_coordinates, dI, cell_)
           self.ad_grid_m[l][base+dI+cell_] += weight * self.m_p[p]
           self.ad_grid_v[l][base+dI+cell_] += weight * (self.m_p[p] * self.v_p[p]) + stress @ g_weight
     
@@ -164,7 +171,7 @@ class AdaptiveGIMP:
 
       for dI in ti.grouped(ti.ndrange(*((2, ) * self.dim))):
         for cell_ in ti.grouped(ti.ndrange(*((2, ) * self.dim))):
-          weight, g_weight = get_linear_weight(self.radius, trilinear_coordinates, dI, cell_)
+          weight, g_weight = get_linear_weight(self.dim, self.radius, trilinear_coordinates, dI, cell_)
           new_v += self.ad_grid_v[l][base+dI+cell_] * weight
           new_G += self.ad_grid_v[l][base+dI+cell_].outer_product(g_weight)
         
@@ -175,22 +182,23 @@ class AdaptiveGIMP:
   @ti.kernel
   def grid_op(self, l : ti.template(), dt0 : ti.f32):
     l_size = self.coarsest_size * (2**l)
-    for I in ti.grouped(self.ad_grid_m[l]):
-      if self.ad_grid_m[l][I] > 0 and self.active_node_mask[self._map(l, I)] == ACTIVATED: # only on real degree-of-freedom
+    for I in ti.grouped(self.ad_grid_v[l]):
+      if all(0 <= I <= l_size) and self.ad_grid_m[l][I] > 0 and self.active_node_mask[self._map(l, I)] == ACTIVATED: # only on real degree-of-freedom
         self.ad_grid_v[l][I] /= self.ad_grid_m[l][I]
         self.ad_grid_v[l][I] += self.gravity * dt0
         for v in ti.static(range(self.dim)):
-          if self._map(l, I)[v] < self.boundary_gap * 2**(self.level-1) or \
-             self._map(l, I)[v] > self.finest_size - self.boundary_gap * 2**(self.level-1):
+          if self._map(l, I)[v] < self.boundary_gap or \
+             self._map(l, I)[v] > self.finest_size - self.boundary_gap:
             self.ad_grid_v[l][I][v] = 0
 
   @ti.kernel
   def grid_restriction(self, l : ti.template()):
     l_size = self.coarsest_size * (2**l)
-    for I in ti.grouped(self.ad_grid_v[l]):
-      if (self.active_node_mask[self._map(l, I)] == ACTIVATED and all(I % 2 == 0)) or \
-          self.active_node_mask[self._map(l, I)] == T_JUNCTION or \
-          self.active_node_mask[self._map(l, I)] == GHOST:
+    for I in ti.grouped(self.ad_grid_m[l]):
+      if all(0 <= I <= l_size) and \
+         ((self.active_node_mask[self._map(l, I)] == ACTIVATED and all(I % 2 == 0)) or \
+         self.active_node_mask[self._map(l, I)] == T_JUNCTION or \
+         self.active_node_mask[self._map(l, I)] == GHOST):
         for dI in ti.grouped(ti.ndrange(*(((-1, 2), ) * self.dim))):
           if all(I+dI>=0) and all(I+dI <= l_size) and all ((I+dI) % 2 == 0):
             I0 = (I+dI)//2
@@ -207,28 +215,30 @@ class AdaptiveGIMP:
     l0_size = self.coarsest_size * (2**l0)
     l_size = l0_size * 2
     for I in ti.grouped(self.ad_grid_v[l]):
-      if self.active_node_mask[self._map(l, I)] == T_JUNCTION or \
-         self.active_node_mask[self._map(l, I)] == GHOST or \
-         all(I % 2 == 0): # non real-DOF should get value from real-DOF
+      if all(0 <= I <= l_size) and \
+         (self.active_node_mask[self._map(l, I)] == T_JUNCTION or \
+          self.active_node_mask[self._map(l, I)] == GHOST or \
+          all(I % 2 == 0)): # non real-DOF should get value from real-DOF
         self.ad_grid_v[l][I].fill(0.0)
 
     for I in ti.grouped(self.ad_grid_v[l0]):
-      if (self.active_node_mask[self._map(l0, I)] == ACTIVATED or \
-          self.active_node_mask[self._map(l0, I)] == T_JUNCTION or \
-          self.active_node_mask[self._map(l0, I)] == GHOST):
+      if all(0 <= I <= l0_size) and \
+         (self.active_node_mask[self._map(l0, I)] == ACTIVATED or \
+         self.active_node_mask[self._map(l0, I)] == T_JUNCTION or \
+         self.active_node_mask[self._map(l0, I)] == GHOST):
         I2 = I * 2
         for dI in ti.grouped(ti.ndrange(*(((-1, 2), ) * self.dim))):
-          if all(I2+dI>=0) and all(I2+dI <= l_size*2) and \
-              self.active_node_mask[self._map(l, I2+dI)] == T_JUNCTION or \
+          if all(0 <= I2+dI <= l_size) and \
+              (self.active_node_mask[self._map(l, I2+dI)] == T_JUNCTION or \
               self.active_node_mask[self._map(l, I2+dI)] == GHOST or \
-              (self.active_node_mask[self._map(l, I2+dI)] == ACTIVATED and all(dI==0)): # always count self
+              (self.active_node_mask[self._map(l, I2+dI)] == ACTIVATED and all(dI==0))): # always count self
             weight = 0.5**float(ti.abs(dI).sum())
             self.ad_grid_v[l][I2+dI] += self.ad_grid_v[l0][I] * weight
 
   def substep(self, dt0):
     self.level_block.deactivate_all()
     for l in range(self.level):
-        self.reinitialize_level(l)
+      self.grid[l].deactivate_all()
     
     self.level_mapping()
     for l in range(self.level):
