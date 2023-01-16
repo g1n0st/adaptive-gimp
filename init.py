@@ -12,7 +12,7 @@ def initialize_particle(simulator : ti.template()):
 def initialize_mask0(simulator : ti.template()):
   sz = simulator.finest_size
   for I in ti.grouped(ti.ndrange(sz, sz)):
-    simulator.activate_cell(3, I)
+    simulator.activate_cell(simulator.level-1, I)
 
 @ti.kernel
 def initialize_mask1(simulator : ti.template()):

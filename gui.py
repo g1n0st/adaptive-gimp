@@ -43,13 +43,13 @@ class GUI:
                 self.bg_img[i+di, j+dj] = ti.Vector([0.0, 0.0, 0.55])
     
     @ti.kernel
-    def visualize_sparse(self, simulator : ti.template()):
+    def visualize_sparse(self, simulator : ti.template(), L : ti.template()):
       finest_size = simulator.coarsest_size * (2**(simulator.level-1))
       for i, j in ti.ndrange(self.res, self.res):
         self.bg_img[i, j].fill(0.0)
         for l0 in ti.static(range(simulator.level)):
           l = ti.static(simulator.level-1-l0)
-          if True:
+          if ti.static(L == l):
             scale = self.res // (simulator.coarsest_size * (2**l))
             if ti.is_active(simulator.grid[l], ti.rescale_index(simulator.ad_grid_v[l], simulator.grid[l], [i // scale, j // scale])):
               if any(simulator.ad_grid_v[l][i // scale, j // scale] != 0):
@@ -62,7 +62,8 @@ class GUI:
                   self.bg_img[i, j] = ti.Vector([0.18, 0.58, 0.88])
 
     def show(self, simulator):
-      self.visualize_mask(simulator)
+      # self.visualize_mask(simulator)
+      self.visualize_sparse(simulator, simulator.level-1)
       self.canvas.set_image(self.bg_img)
       self.canvas.circles(simulator.x_p, radius=0.006, color=(0.93, 0.33, 0.23))
       self.window.show()

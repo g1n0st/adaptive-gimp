@@ -28,10 +28,10 @@ class AdaptiveGIMP:
     self.ad_grid_m = []
     for l in range(level):
       l_size = coarsest_size * (2**l)
-      leaf_size = self.leaf_size * (2**l)
+      leaf_size = 4
       self.dense_block.append(ti.root.dense(ti.ij if self.dim == 2 else ti.ijk, (l_size+1, ) * self.dim))
       self.grid.append(ti.root.pointer(ti.ij if self.dim == 2 else ti.ijk, (align_size(l_size//leaf_size+1, 4), ) * self.dim))
-      self.block.append(self.grid[l].dense(ti.ij if self.dim == 2 else ti.ijk, leaf_size))
+      self.block.append(self.grid[l].bitmasked(ti.ij if self.dim == 2 else ti.ijk, leaf_size))
       self.active_cell_mask.append(ti.field(int))
       self.ad_grid_v.append(ti.Vector.field(self.dim, float))
       self.ad_grid_m.append(ti.field(float))
