@@ -7,7 +7,8 @@ class AdaptiveGIMP:
                dim, 
                level, coarsest_size,
                n_particles,
-               grid_initializer, particle_initializer):
+               particle_initializer, 
+               grid_initializer = None):
     self.dim = dim
     # ----- adaptive grid data ------
     self.level = level
@@ -33,15 +34,13 @@ class AdaptiveGIMP:
     self.ad_grid_m = []
     for l in range(level):
       l_size = coarsest_size * (2**l)
-      leaf_size = 4
-      self.dense_block.append(ti.root.dense(self.axis, (l_size+1, ) * self.dim))
+      leaf_size = 8
       self.grid.append(ti.root.pointer(self.axis, (align_size(l_size//leaf_size+1, 4), ) * self.dim))
       self.block.append(self.grid[l].bitmasked(self.axis, leaf_size))
       self.active_cell_mask.append(ti.field(int))
       self.ad_grid_v.append(ti.Vector.field(self.dim, float))
       self.ad_grid_m.append(ti.field(float))
-      self.dense_block[l].place(self.active_cell_mask[l])
-      self.block[l].place(self.ad_grid_v[l], self.ad_grid_m[l])
+      self.block[l].place(self.active_cell_mask[l], self.ad_grid_v[l], self.ad_grid_m[l])
 
     # -------- particle data --------
     self.radius = 0.5 # Half-cell; this reflects what the radius is at the finest level of adaptivity
@@ -60,13 +59,29 @@ class AdaptiveGIMP:
     self.pid = ti.field(int)
     self.level_block.dynamic(ti.j, self.n_particles, chunk_size = 16 * (2**self.dim)).place(self.pid)
 
-    grid_initializer(self)
     particle_initializer(self)
+    self.grid_initializer = grid_initializer
+    self.static_adaptivity = (grid_initializer != None)
 
   @ti.func
   def activate_cell(self, l : ti.template(), I):
     ti.atomic_or(self.active_cell_mask[l][I // (2**(self.level-1-l))], ACTIVATED)
   
+  @ti.kernel
+  def activate_cell_static(self):
+    for p in range(self.n_particles):
+      f_dx = self.coarsest_dx / (2**(self.level-1))
+      f_base = (self.x_p[p] / f_dx + 0.5).cast(int) - 1
+
+      for dI in ti.grouped(ti.ndrange(*(((-1, 3), ) * self.dim))):
+        self.grid_initializer(self, (f_base+dI))
+
+      level = self.grid_initializer(self, f_base)
+      dx = self.coarsest_dx / (2**(level))
+      base = (self.x_p[p] / dx + 0.5).cast(int) - 1
+      for dI in ti.grouped(ti.ndrange(*((2, ) * self.dim))):
+        self.grid_initializer(self, (base+dI) * 2**(self.level-1-level))
+
   @ti.func
   def _map(self, l, I): # map the level-l node to the finest node
     return I * (2**(self.level-1-l))
@@ -245,6 +260,9 @@ class AdaptiveGIMP:
     self.node_mask_grid.deactivate_all()
     for l in range(self.level):
       self.grid[l].deactivate_all()
+    
+    if self.static_adaptivity:
+      self.activate_cell_static()
     
     self.mark_activated()
     self.mark_ghost_and_T_junction()

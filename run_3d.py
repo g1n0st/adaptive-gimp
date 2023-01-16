@@ -1,6 +1,7 @@
 import taichi as ti
 from utils import *
 from gui_3d import *
+from init import *
 from adaptive_gimp import AdaptiveGIMP
 import argparse
 
@@ -10,20 +11,19 @@ args = parser.parse_args()
 ti.init(arch=ti.cpu)
 
 @ti.kernel
-def init_mask(simulator : ti.template()):
-  sz = simulator.finest_size
-  for I in ti.grouped(ti.ndrange(sz, sz, sz)):
-    simulator.activate_cell(simulator.level-1, I)
-
-@ti.kernel
 def init_p(simulator : ti.template()):
   for i in range(simulator.n_particles):
-    simulator.x_p[i] = [ti.random() * 0.3 + 0.2, ti.random() * 0.3 + 0.3, ti.random() * 0.3 + 0.2]
-    simulator.v_p[i] = [0, -20.0, 0]
+    if i // 25000 == 0:
+      simulator.x_p[i] = [ti.random() * 0.3 + 0.2, ti.random() * 0.3 + 0.1, ti.random() * 0.3 + 0.2]
+      simulator.v_p[i] = [0, 20.0, 0]
+    else:
+      simulator.x_p[i] = [ti.random() * 0.3 + 0.2, ti.random() * 0.3 + 0.5, ti.random() * 0.3 + 0.2]
+      simulator.v_p[i] = [0, -20.0, 0]
+
     simulator.F_p[i] = ti.Matrix.identity(ti.f32, 3)
     simulator.m_p[i] = simulator.p_mass
 
-simulator = AdaptiveGIMP(3, 2, 32, 50000, init_mask, init_p)
+simulator = AdaptiveGIMP(3, 2, 32, 50000, init_p, initialize_mask0)
 gui = GUI3D()
 
 while True:
