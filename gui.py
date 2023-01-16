@@ -62,8 +62,8 @@ class GUI:
                   self.bg_img[i, j] = ti.Vector([0.18, 0.58, 0.88])
 
     def show(self, simulator):
-      # self.visualize_mask(simulator)
-      self.visualize_sparse(simulator, simulator.level-1)
+      self.visualize_mask(simulator)
+      # self.visualize_sparse(simulator, simulator.level-1)
       self.canvas.set_image(self.bg_img)
       self.canvas.circles(simulator.x_p, radius=0.006, color=(0.93, 0.33, 0.23))
       self.window.show()
