@@ -29,18 +29,18 @@ class GUI:
       for i, j in ti.ndrange(self.res, self.res):
         fscale = self.res // (finest_size)
         if i % fscale == 0 and j % fscale == 0:
-          if simulator.active_node_mask[i // fscale, j // fscale] == ACTIVATED:
+          if simulator.is_activated(simulator.level-1, [i // fscale, j // fscale]):
             for di, dj in ti.ndrange((-1, 2), (-1, 2)):
               if 0<=i+di < self.res and 0<=j+dj < self.res:
                 self.bg_img[i+di, j+dj] = ti.Vector([1.0, 0.0, 0.0])
-          elif simulator.active_node_mask[i // fscale, j // fscale] == T_JUNCTION:
+          elif simulator.is_T_junction(simulator.level-1, [i // fscale, j // fscale]):
             for di, dj in ti.ndrange((-1, 2), (-1, 2)):
               if 0<=i+di < self.res and 0<=j+dj < self.res:
                 self.bg_img[i+di, j+dj] = ti.Vector([0.0, 1.0, 0.0])
-          elif simulator.active_node_mask[i // fscale, j // fscale] == GHOST:
+          elif simulator.is_ghost(simulator.level-1, [i // fscale, j // fscale]):
             for di, dj in ti.ndrange((-1, 2), (-1, 2)):
               if 0<=i+di < self.res and 0<=j+dj < self.res:
-                self.bg_img[i+di, j+dj] = ti.Vector([0.0, 0.0, 0.55])
+                self.bg_img[i+di, j+dj] = ti.Vector([0.0, 0.0, 0.35])
     
     @ti.kernel
     def visualize_sparse(self, simulator : ti.template(), L : ti.template()):

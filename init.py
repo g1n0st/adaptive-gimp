@@ -18,7 +18,7 @@ def initialize_mask0(simulator : ti.template()):
 def initialize_mask1(simulator : ti.template()):
   sz = simulator.finest_size
   for I in ti.grouped(ti.ndrange(sz, sz)):
-    if I[0] < sz / 2 and all(8 < I < sz - 9):
+    if I[0] < sz / 2 and all(8 <= I < sz - 8):
       simulator.activate_cell(0, I)
     else: simulator.activate_cell(3, I)
 
@@ -26,16 +26,16 @@ def initialize_mask1(simulator : ti.template()):
 def initialize_mask2(simulator : ti.template()):
   sz = simulator.finest_size
   for I in ti.grouped(ti.ndrange(sz, sz)):
-    if I[0] < sz / 4 and all(8 < I < sz - 9):
+    if I[0] < sz / 4 and all(8 <= I < sz - 8):
       simulator.activate_cell(0, I)
-    elif I[0] < sz / 2 and all(8 < I < sz - 9): simulator.activate_cell(1, I)
+    elif I[0] < sz / 2 and all(8 <= I < sz - 8): simulator.activate_cell(1, I)
     else: simulator.activate_cell(2, I)
 
 @ti.kernel
 def initialize_mask3(simulator : ti.template()):
   sz = simulator.finest_size
   for I in ti.grouped(ti.ndrange(sz, sz)):
-    if I[0] < sz / 2 and all(8 < I < sz - 9):
+    if I[0] < sz / 2 and all(8 <= I < sz - 8):
       if I[1] < sz / 2: simulator.activate_cell(1, I)
       else: simulator.activate_cell(2, I)
     else: simulator.activate_cell(3, I)
@@ -44,7 +44,7 @@ def initialize_mask3(simulator : ti.template()):
 def initialize_mask4(simulator : ti.template()):
   sz = simulator.finest_size
   for I in ti.grouped(ti.ndrange(sz, sz)):
-    if I[0] < sz / 2 and all(8 < I < sz - 9):
+    if I[0] < sz / 2 and all(8 <= I < sz - 8):
       if I[1] < sz / 4: simulator.activate_cell(0, I)
       elif I[1] < sz / 2: simulator.activate_cell(1, I)
       else: simulator.activate_cell(2, I)

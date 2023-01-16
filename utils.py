@@ -3,9 +3,9 @@ import taichi as ti
 vec2 = ti.math.ivec2
 
 UNACTIVATED = 0
-ACTIVATED = 1
-GHOST = 2
-T_JUNCTION = 3
+ACTIVATED = 1 << 0
+GHOST = 1 << 1
+T_JUNCTION = 1 << 2
 
 @ti.func
 def get_stress(dim : ti.template(), F, mu, la):

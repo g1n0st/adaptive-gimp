@@ -4,6 +4,7 @@ from init import *
 from gui import *
 from adaptive_gimp import AdaptiveGIMP
 import argparse
+import time
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--case', type=int, default=0)
@@ -19,3 +20,4 @@ gui = GUI()
 while True:
   for i in range(20): simulator.substep(2e-5)
   gui.show(simulator)
+  # time.sleep(10000)
