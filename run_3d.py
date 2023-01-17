@@ -8,7 +8,7 @@ import argparse
 parser = argparse.ArgumentParser()
 args = parser.parse_args()
 
-ti.init(arch=ti.cpu)
+ti.init(arch=ti.cpu, kernel_profiler=True)
 
 @ti.kernel
 def init_p(simulator : ti.template()):
@@ -26,6 +26,10 @@ def init_p(simulator : ti.template()):
 simulator = AdaptiveGIMP(3, 2, 32, 50000, init_p, initialize_mask0)
 gui = GUI3D()
 
-while True:
+frame = 0
+while frame < 5000:
   for i in range(1): simulator.substep(1e-4)
   gui.show(simulator)
+  frame += 1
+
+ti.profiler.print_kernel_profiler_info()
