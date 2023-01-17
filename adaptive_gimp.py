@@ -22,24 +22,23 @@ class AdaptiveGIMP:
 
     self.node_mask_grid = ti.root.pointer(self.axis, (align_size(self.finest_size//4+1, 4), ) * self.dim)
     self.node_mask_block = self.node_mask_grid.dense(self.axis, 4)
-    self.active_node_mask = ti.field(ti.i32)
-    self.node_mask_block.place(self.active_node_mask)
+    self.node_mask = ti.field(ti.i32)
+    self.node_mask_block.place(self.node_mask)
 
     self.leaf_size = 8
     self.grid = []
-    self.dense_block = []
     self.block = []
-    self.active_cell_mask = []
+    self.cell_mask = []
     self.ad_grid_v = []
     self.ad_grid_m = []
     for l in range(level):
       l_size = coarsest_size * (2**l)
       self.grid.append(ti.root.pointer(self.axis, (align_size(l_size//self.leaf_size+1, 4), ) * self.dim))
       self.block.append(self.grid[l].bitmasked(self.axis, self.leaf_size))
-      self.active_cell_mask.append(ti.field(int))
+      self.cell_mask.append(ti.field(int))
       self.ad_grid_v.append(ti.Vector.field(self.dim, float))
       self.ad_grid_m.append(ti.field(float))
-      self.block[l].place(self.active_cell_mask[l], self.ad_grid_v[l], self.ad_grid_m[l])
+      self.block[l].place(self.cell_mask[l], self.ad_grid_v[l], self.ad_grid_m[l])
 
     # -------- particle data --------
     self.radius = 0.5 # Half-cell; this reflects what the radius is at the finest level of adaptivity
@@ -65,7 +64,7 @@ class AdaptiveGIMP:
 
   @ti.func
   def activate_cell(self, l : ti.template(), I):
-    ti.atomic_or(self.active_cell_mask[l][I // (2**(self.level-1-l))], ACTIVATED)
+    ti.atomic_or(self.cell_mask[l][I // (2**(self.level-1-l))], ACTIVATED)
 
   @ti.kernel
   def activate_cell_static(self):
@@ -91,29 +90,29 @@ class AdaptiveGIMP:
       for dI in ti.grouped(ti.ndrange(*((2, ) * self.dim))):
         for L in ti.static(range(self.level)): 
           if L == self.g_p[p]:
-            ti.atomic_or(self.active_cell_mask[L][base+dI], ACTIVATED)
+            ti.atomic_or(self.cell_mask[L][base+dI], ACTIVATED)
 
   @ti.kernel
   def _mark_hier_(self, l : ti.template(), verbose : ti.template()):
-    for I in ti.grouped(self.active_cell_mask[l]):
-      if (self.active_cell_mask[l][I] & ACTIVATED):
+    for I in ti.grouped(self.cell_mask[l]):
+      if (self.cell_mask[l][I] & ACTIVATED):
         l0 = -1
         for l_ in ti.static(range(l)):
-          if (self.active_cell_mask[l_][I // (2**(l-l_))] & ACTIVATED):
+          if (self.cell_mask[l_][I // (2**(l-l_))] & ACTIVATED):
             l0 = ti.max(l0, l_)
         if l0 != -1:
           for l_ in ti.static(range(self.level)):
             if l0 <= l_ < l:
-              ti.atomic_or(self.active_cell_mask[l_][I // (2**ti.max(l-l_, 0))], CULLING)
+              ti.atomic_or(self.cell_mask[l_][I // (2**ti.max(l-l_, 0))], CULLING)
 
   @ti.kernel
   def _split_hier_(self, l : ti.template()):
-    for I in ti.grouped(self.active_cell_mask[l]):
-      if (self.active_cell_mask[l][I] & CULLING):
+    for I in ti.grouped(self.cell_mask[l]):
+      if (self.cell_mask[l][I] & CULLING):
         for dI in ti.grouped(ti.ndrange(*((2, ) * self.dim))):
-          ti.atomic_or(self.active_cell_mask[ti.static(l+1)][I*2+dI], ACTIVATED)
+          ti.atomic_or(self.cell_mask[ti.static(l+1)][I*2+dI], ACTIVATED)
 
-        self.active_cell_mask[l][I] = 0
+        self.cell_mask[l][I] = 0
 
   def culling_hierarchy_duplicate(self):
     for l in reversed(range(self.level)):
@@ -126,60 +125,59 @@ class AdaptiveGIMP:
     return I * (2**(self.level-1-l))
 
   @ti.func
-  def is_valid(self, l, I): return (self.active_node_mask[self._map(l, I)] > 0)
+  def is_valid(self, l, I): return (self.node_mask[self._map(l, I)] > 0)
 
   @ti.func
-  def is_activated(self, l, I): return (self.active_node_mask[self._map(l, I)] & (ACTIVATED | T_JUNCTION)) == ACTIVATED
+  def is_activated(self, l, I): return (self.node_mask[self._map(l, I)] & (ACTIVATED | T_JUNCTION)) == ACTIVATED
 
   @ti.func
-  def is_T_junction(self, l, I): return (self.active_node_mask[self._map(l, I)] & T_JUNCTION) == T_JUNCTION
+  def is_T_junction(self, l, I): return (self.node_mask[self._map(l, I)] & T_JUNCTION) == T_JUNCTION
 
   @ti.func
-  def is_ghost(self, l, I): return (self.active_node_mask[self._map(l, I)] & (ACTIVATED | GHOST | T_JUNCTION)) == GHOST
+  def is_ghost(self, l, I): return (self.node_mask[self._map(l, I)] & (ACTIVATED | GHOST | T_JUNCTION)) == GHOST
 
   @ti.kernel
-  def _accumulate_mask(self, l : ti.template()):
+  def _activate_mask(self, l : ti.template()):
     l_size = self.coarsest_size * (2**l)
     D = ti.Matrix.identity(int, self.dim)
-    for I in ti.grouped(self.active_cell_mask[l]):
-      if self.active_cell_mask[l][I] == ACTIVATED:
+    for I in ti.grouped(self.cell_mask[l]):
+      if self.cell_mask[l][I] == ACTIVATED:
         for dI in ti.grouped(ti.ndrange(*((2, ) * self.dim))):
-          ti.atomic_or(self.active_node_mask[self._map(l, I+dI)], ACTIVATED)
+          ti.atomic_or(self.node_mask[self._map(l, I+dI)], ACTIVATED)
 
   def mark_activated(self):
     for l in range(self.level):
-      self._accumulate_mask(l)
+      self._activate_mask(l)
 
   @ti.func
   def _heriarchical_check(self, l, I):
-    return ti.Vector([_ if (self.active_cell_mask[_][I // (2**ti.max(l-_, 0))] == ACTIVATED and _ <= l) \
+    return ti.Vector([_ if (self.cell_mask[_][I // (2**ti.max(l-_, 0))] == ACTIVATED and _ <= l) \
       else -1 for _ in ti.static(range(0, self.level))], int).max()
 
   @ti.kernel
   def _mark_ghost_and_T_junction(self, l : ti.template()):
     l_size = self.coarsest_size * (2**l)
     D = ti.Matrix.identity(int, self.dim)
-    for I in ti.grouped(self.active_cell_mask[l]):
-      if self.active_cell_mask[l][I] == ACTIVATED:
+    for I in ti.grouped(self.cell_mask[l]):
+      if self.cell_mask[l][I] == ACTIVATED:
         for _ in ti.static(range(self.dim * 2)):
           I1 = I+D[:, _//2]*(-1 if _%2 else 1)
           l_p = self._heriarchical_check(l, I1) # parent level
-          if all(0<=I1<l_size) and self.active_cell_mask[l][I1] != ACTIVATED and l_p > -1:
+          if all(0<=I1<l_size) and self.cell_mask[l][I1] != ACTIVATED and l_p > -1:
             # check T_junction node
             for cell_ in ti.grouped(ti.ndrange(*((2, ) * self.dim))):
               if cell_[_//2] == _%2:
                 if any((I1+cell_) % (2**(l - l_p)) != 0):
-                  ti.atomic_or(self.active_node_mask[self._map(l, I1+cell_)], T_JUNCTION)
+                  ti.atomic_or(self.node_mask[self._map(l, I1+cell_)], T_JUNCTION)
 
             # check ghost node
             for l0 in ti.static(range(self.level)):
               if l_p < l0 <= l:
                 I1_p = I1 // (2**ti.max(l-l0, 0))
-                ti.atomic_or(self.active_cell_mask[l0][I1_p], GHOST)
+                ti.atomic_or(self.cell_mask[l0][I1_p], GHOST)
                 for cell_ in ti.grouped(ti.ndrange(*((2, ) * self.dim))):
-                  I1_pn = I1_p+cell_
-                  if self.active_node_mask[self._map(l0, I1_pn)] == UNACTIVATED:
-                    ti.atomic_or(self.active_node_mask[self._map(l0, I1_pn)], GHOST)
+                  if self.node_mask[self._map(l0, I1_p+cell_)] == UNACTIVATED:
+                    ti.atomic_or(self.node_mask[self._map(l0, I1_p+cell_)], GHOST)
 
   def mark_ghost_and_T_junction(self):
     for l in reversed(range(self.level)):
@@ -192,7 +190,7 @@ class AdaptiveGIMP:
       dx = self.coarsest_dx / (2**l)
       base = (self.x_p[p] / dx + 0.5).cast(int) - 1
       for dI in ti.grouped(ti.ndrange(*((2, ) * self.dim))):
-        if self.active_cell_mask[l][base+dI] == ACTIVATED: f_l = ti.max(f_l, l)
+        if self.cell_mask[l][base+dI] == ACTIVATED: f_l = ti.max(f_l, l)
     return f_l
 
   @ti.kernel

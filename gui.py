@@ -17,11 +17,11 @@ class GUI:
         self.bg_img[i, j].fill(0.0)
         for l in ti.static(range(simulator.level)):
           scale = self.res // (simulator.coarsest_size * (2**l))
-          if simulator.active_cell_mask[l][i // scale, j // scale] == ACTIVATED: # normal activated cell
+          if simulator.cell_mask[l][i // scale, j // scale] == ACTIVATED: # normal activated cell
             self.bg_img[i, j] = ti.Vector([0.28, 0.68, 0.99])
             if i % scale == 0 or i % scale == scale-1 or j % scale == 0 or j % scale == scale-1:
               self.bg_img[i, j] = ti.Vector([0.18, 0.58, 0.88])
-          elif simulator.active_cell_mask[l][i // scale, j // scale] == GHOST and show_ghost: # ghost cell
+          elif simulator.cell_mask[l][i // scale, j // scale] == GHOST and show_ghost: # ghost cell
             self.bg_img[i, j] = ti.Vector([0, 0, 1.0])
             if i % scale == 0 or i % scale == scale-1 or j % scale == 0 or j % scale == scale-1:
               self.bg_img[i, j] = ti.Vector([0, 0, 0.77])

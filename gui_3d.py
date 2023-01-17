@@ -19,9 +19,9 @@ class GUI3D:
       self.bound_box.from_numpy(np.array([[0.0, 0.0, 0.0], 
                                           [1.0, 0.0, 0.0], 
                                           [1.0, 0.0, 1.0], 
-                                          [0.0, 0.0, 1.0]]))
+                                          [0.0, 0.0, 1.0]], dtype=np.float32))
       self.floor = ti.field(ti.i32, shape=6)
-      self.floor.from_numpy(np.array([0, 1, 2, 0, 2, 3]))
+      self.floor.from_numpy(np.array([0, 1, 2, 0, 2, 3], dtype=np.int32))
     
     def show(self, simulator):
       self.camera.track_user_inputs(self.window, movement_speed=0.03, hold_key=ti.ui.RMB)
