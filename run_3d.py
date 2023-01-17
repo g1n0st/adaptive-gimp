@@ -22,8 +22,9 @@ def init_p(simulator : ti.template()):
 
     simulator.F_p[i] = ti.Matrix.identity(ti.f32, 3)
     simulator.m_p[i] = simulator.p_mass
+    simulator.g_p[i] = simulator.level-1
 
-simulator = AdaptiveGIMP(3, 2, 32, 50000, init_p, initialize_mask0)
+simulator = AdaptiveGIMP(3, 2, 32, 50000, init_p, None)
 gui = GUI3D()
 
 frame = 0

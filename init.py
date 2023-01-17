@@ -3,10 +3,11 @@ import taichi as ti
 @ti.kernel
 def initialize_particle(simulator : ti.template()):
   for i in range(simulator.n_particles):
-    simulator.x_p[i] = [ti.random() * 0.6 + 0.2, ti.random() * 0.4 + 0.3]
+    simulator.x_p[i] = [ti.random() * 0.4 + 0.2, ti.random() * 0.4 + 0.3]
     simulator.v_p[i] = [0, -20.0]
     simulator.F_p[i] = ti.Matrix.identity(ti.f32, 2)
     simulator.m_p[i] = simulator.p_mass
+    simulator.g_p[i] = simulator.level-1
 
 @ti.func
 def initialize_mask0(simulator, I):

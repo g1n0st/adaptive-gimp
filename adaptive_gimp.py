@@ -54,7 +54,8 @@ class AdaptiveGIMP:
     self.v_p = ti.Vector.field(dim, ti.f32, shape=self.n_particles)
     self.F_p = ti.Matrix.field(dim, dim, ti.f32, shape=self.n_particles)
     self.m_p = ti.field(ti.f32, shape=self.n_particles)
-    self.fl_p = ti.field(ti.i32, shape=self.n_particles) # auxiliary data
+    self.g_p = ti.field(ti.i32, shape=self.n_particles) # auxiliary data: prescribed grid level for particles
+    self.fl_p = ti.field(ti.i32, shape=self.n_particles) # auxiliary data: finest level near particles
     self.level_block = ti.root.dense(ti.i, self.level)
     self.pid = ti.field(int)
     self.level_block.dynamic(ti.j, self.n_particles, chunk_size = 16 * (2**self.dim)).place(self.pid)
@@ -81,6 +82,17 @@ class AdaptiveGIMP:
       base = (self.x_p[p] / dx + 0.5).cast(int) - 1
       for dI in ti.grouped(ti.ndrange(*((2, ) * self.dim))):
         self.grid_initializer(self, (base+dI) * 2**(self.level-1-level))
+  
+  @ti.kernel
+  def activate_cell_dynamic(self):
+    for p in range(self.n_particles):
+      dx = self.coarsest_dx / (2**self.g_p[p])
+      base = (self.x_p[p] / dx + 0.5).cast(int) - 1
+
+      for dI in ti.grouped(ti.ndrange(*((2, ) * self.dim))):
+        for L in ti.static(range(self.level)): 
+          if L == self.g_p[p]:
+            ti.atomic_or(self.active_cell_mask[L][base+dI], ACTIVATED)
 
   @ti.func
   def _map(self, l, I): # map the level-l node to the finest node
@@ -280,6 +292,8 @@ class AdaptiveGIMP:
     
     if self.static_adaptivity:
       self.activate_cell_static()
+    else:
+      self.activate_cell_dynamic()
     
     self.mark_activated()
     self.mark_ghost_and_T_junction()

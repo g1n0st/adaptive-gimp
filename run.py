@@ -12,9 +12,9 @@ args = parser.parse_args()
 
 ti.init(arch=ti.cpu)
 
-initializer = [initialize_mask0, initialize_mask1, initialize_mask2, initialize_mask3, initialize_mask4]
+initializer = [initialize_mask0, initialize_mask1, initialize_mask2, initialize_mask3, initialize_mask4, None]
 # simulator = AdaptiveGIMP(2, 1, 128, 20000, initializer[args.case], initialize_particle)
-simulator = AdaptiveGIMP(2, 4, 16, 20000, initialize_particle, initializer[args.case])
+simulator = AdaptiveGIMP(2, 4, 16, 10000, initialize_particle, initializer[args.case])
 gui = GUI()
 
 while True:
