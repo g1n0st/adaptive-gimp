@@ -168,6 +168,18 @@ class AdaptiveGIMP:
     for p in range(self.n_particles):
       self.fl_p[p] = self.get_finest_level_near_particle(p)
       self.pid[self.fl_p[p]].append(p)
+  
+  @ti.func
+  def get_weight_stencil(self, trilinear_coordinates):
+    __weight = ti.Matrix.zero(float, ti.static((3 ** self.dim)), ti.static(self.dim+1))
+    __conv = ti.Vector([3**_ for _ in ti.static(range(self.dim))])
+    for dI in ti.static(ti.grouped(ti.ndrange(*((2, ) * self.dim)))):
+      for cell_ in ti.static(ti.grouped(ti.ndrange(*((2, ) * self.dim)))):
+        weight, g_weight = get_linear_weight(self.dim, self.radius, trilinear_coordinates, dI, cell_)
+        __weight[(dI+cell_).dot(__conv), 0] += weight
+        __weight[(dI+cell_).dot(__conv), 1:] += g_weight
+    
+    return __weight, __conv
 
   @ti.kernel
   def p2g(self, l : ti.template(), dt0 : ti.f32):
@@ -180,12 +192,15 @@ class AdaptiveGIMP:
 
       # compute stress
       stress = -dt0 * (0.5**self.dim) / ((self.radius**self.dim) * dx) * get_stress(self.dim, self.F_p[p], self.mu, self.la)
+      
+      __weight, __conv = self.get_weight_stencil(trilinear_coordinates)
 
-      for dI in ti.grouped(ti.ndrange(*((2, ) * self.dim))):
-        for cell_ in ti.grouped(ti.ndrange(*((2, ) * self.dim))):
-          weight, g_weight = get_linear_weight(self.dim, self.radius, trilinear_coordinates, dI, cell_)
-          self.ad_grid_m[l][base+dI+cell_] += weight * self.m_p[p]
-          self.ad_grid_v[l][base+dI+cell_] += weight * (self.m_p[p] * self.v_p[p]) + stress @ g_weight
+      for dI in ti.static(ti.grouped(ti.ndrange(*((3, ) * self.dim)))):
+          tmp = __weight[dI.dot(__conv), :]
+          weight, g_weight = tmp[0], tmp[1:]
+
+          self.ad_grid_m[l][base+dI] += weight * self.m_p[p]
+          self.ad_grid_v[l][base+dI] += weight * (self.m_p[p] * self.v_p[p]) + stress @ g_weight
     
   @ti.kernel
   def g2p(self, l : ti.template(), dt0 : ti.f32):
@@ -199,11 +214,13 @@ class AdaptiveGIMP:
       new_v = ti.Vector.zero(float, self.dim)
       new_G = ti.Matrix.zero(float, self.dim, self.dim)
 
-      for dI in ti.grouped(ti.ndrange(*((2, ) * self.dim))):
-        for cell_ in ti.grouped(ti.ndrange(*((2, ) * self.dim))):
-          weight, g_weight = get_linear_weight(self.dim, self.radius, trilinear_coordinates, dI, cell_)
-          new_v += self.ad_grid_v[l][base+dI+cell_] * weight
-          new_G += self.ad_grid_v[l][base+dI+cell_].outer_product(g_weight)
+      __weight, __conv = self.get_weight_stencil(trilinear_coordinates)
+
+      for dI in ti.static(ti.grouped(ti.ndrange(*((3, ) * self.dim)))):
+          tmp = __weight[dI.dot(__conv), :]
+          weight, g_weight = tmp[0], tmp[1:]
+          new_v += self.ad_grid_v[l][base+dI] * weight
+          new_G += self.ad_grid_v[l][base+dI].outer_product(g_weight)
         
       self.v_p[p] = new_v
       self.x_p[p] += dt0 * self.v_p[p] # advection
