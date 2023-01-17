@@ -6,6 +6,7 @@ UNACTIVATED = 0
 ACTIVATED = 1 << 0
 GHOST = 1 << 1
 T_JUNCTION = 1 << 2
+CULLING = 1 << 3
 
 @ti.func
 def get_stress(dim : ti.template(), F, mu, la):

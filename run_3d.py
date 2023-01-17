@@ -13,18 +13,24 @@ ti.init(arch=ti.cpu, kernel_profiler=True)
 @ti.kernel
 def init_p(simulator : ti.template()):
   for i in range(simulator.n_particles):
+    xyz = ti.Vector([ti.random(), ti.random(), ti.random()])
     if i // 25000 == 0:
-      simulator.x_p[i] = [ti.random() * 0.3 + 0.2, ti.random() * 0.3 + 0.1, ti.random() * 0.3 + 0.2]
+      simulator.x_p[i] = [xyz[0] * 0.3 + 0.2, xyz[1] * 0.3 + 0.1, xyz[2] * 0.3 + 0.2]
       simulator.v_p[i] = [0, 20.0, 0]
     else:
-      simulator.x_p[i] = [ti.random() * 0.3 + 0.2, ti.random() * 0.3 + 0.5, ti.random() * 0.3 + 0.2]
+      simulator.x_p[i] = [xyz[0] * 0.3 + 0.2, xyz[1] * 0.3 + 0.5, xyz[2] * 0.3 + 0.2]
       simulator.v_p[i] = [0, -20.0, 0]
 
     simulator.F_p[i] = ti.Matrix.identity(ti.f32, 3)
     simulator.m_p[i] = simulator.p_mass
-    simulator.g_p[i] = simulator.level-1
+    if all(0.1 <= xyz <= 0.9):
+      simulator.g_p[i] = 0
+    elif all(0.03 <= xyz <= 0.97):
+      simulator.g_p[i] = 1
+    else:
+      simulator.g_p[i] = 2
 
-simulator = AdaptiveGIMP(3, 2, 32, 50000, init_p, None)
+simulator = AdaptiveGIMP(3, 3, 16, 50000, init_p, None)
 gui = GUI3D()
 
 frame = 0

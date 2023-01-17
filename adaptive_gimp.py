@@ -25,7 +25,7 @@ class AdaptiveGIMP:
     self.active_node_mask = ti.field(ti.i32)
     self.node_mask_block.place(self.active_node_mask)
 
-    self.leaf_size = 4
+    self.leaf_size = 8
     self.grid = []
     self.dense_block = []
     self.block = []
@@ -34,9 +34,8 @@ class AdaptiveGIMP:
     self.ad_grid_m = []
     for l in range(level):
       l_size = coarsest_size * (2**l)
-      leaf_size = 8
-      self.grid.append(ti.root.pointer(self.axis, (align_size(l_size//leaf_size+1, 4), ) * self.dim))
-      self.block.append(self.grid[l].bitmasked(self.axis, leaf_size))
+      self.grid.append(ti.root.pointer(self.axis, (align_size(l_size//self.leaf_size+1, 4), ) * self.dim))
+      self.block.append(self.grid[l].bitmasked(self.axis, self.leaf_size))
       self.active_cell_mask.append(ti.field(int))
       self.ad_grid_v.append(ti.Vector.field(self.dim, float))
       self.ad_grid_m.append(ti.field(float))
@@ -67,7 +66,7 @@ class AdaptiveGIMP:
   @ti.func
   def activate_cell(self, l : ti.template(), I):
     ti.atomic_or(self.active_cell_mask[l][I // (2**(self.level-1-l))], ACTIVATED)
-  
+
   @ti.kernel
   def activate_cell_static(self):
     for p in range(self.n_particles):
@@ -82,7 +81,7 @@ class AdaptiveGIMP:
       base = (self.x_p[p] / dx + 0.5).cast(int) - 1
       for dI in ti.grouped(ti.ndrange(*((2, ) * self.dim))):
         self.grid_initializer(self, (base+dI) * 2**(self.level-1-level))
-  
+
   @ti.kernel
   def activate_cell_dynamic(self):
     for p in range(self.n_particles):
@@ -94,22 +93,50 @@ class AdaptiveGIMP:
           if L == self.g_p[p]:
             ti.atomic_or(self.active_cell_mask[L][base+dI], ACTIVATED)
 
+  @ti.kernel
+  def _mark_hier_(self, l : ti.template(), verbose : ti.template()):
+    for I in ti.grouped(self.active_cell_mask[l]):
+      if (self.active_cell_mask[l][I] & ACTIVATED):
+        l0 = -1
+        for l_ in ti.static(range(l)):
+          if (self.active_cell_mask[l_][I // (2**(l-l_))] & ACTIVATED):
+            l0 = ti.max(l0, l_)
+        if l0 != -1:
+          for l_ in ti.static(range(self.level)):
+            if l0 <= l_ < l:
+              ti.atomic_or(self.active_cell_mask[l_][I // (2**ti.max(l-l_, 0))], CULLING)
+
+  @ti.kernel
+  def _split_hier_(self, l : ti.template()):
+    for I in ti.grouped(self.active_cell_mask[l]):
+      if (self.active_cell_mask[l][I] & CULLING):
+        for dI in ti.grouped(ti.ndrange(*((2, ) * self.dim))):
+          ti.atomic_or(self.active_cell_mask[ti.static(l+1)][I*2+dI], ACTIVATED)
+
+        self.active_cell_mask[l][I] = 0
+
+  def culling_hierarchy_duplicate(self):
+    for l in reversed(range(self.level)):
+      if l != 0: self._mark_hier_(l, 0)
+    for l in range(self.level):
+      if l != self.level-1: self._split_hier_(l)
+
   @ti.func
   def _map(self, l, I): # map the level-l node to the finest node
     return I * (2**(self.level-1-l))
-  
+
   @ti.func
   def is_valid(self, l, I): return (self.active_node_mask[self._map(l, I)] > 0)
-  
+
   @ti.func
   def is_activated(self, l, I): return (self.active_node_mask[self._map(l, I)] & (ACTIVATED | T_JUNCTION)) == ACTIVATED
 
   @ti.func
   def is_T_junction(self, l, I): return (self.active_node_mask[self._map(l, I)] & T_JUNCTION) == T_JUNCTION
-  
+
   @ti.func
   def is_ghost(self, l, I): return (self.active_node_mask[self._map(l, I)] & (ACTIVATED | GHOST | T_JUNCTION)) == GHOST
-  
+
   @ti.kernel
   def _accumulate_mask(self, l : ti.template()):
     l_size = self.coarsest_size * (2**l)
@@ -122,7 +149,7 @@ class AdaptiveGIMP:
   def mark_activated(self):
     for l in range(self.level):
       self._accumulate_mask(l)
-  
+
   @ti.func
   def _heriarchical_check(self, l, I):
     return ti.Vector([_ if (self.active_cell_mask[_][I // (2**ti.max(l-_, 0))] == ACTIVATED and _ <= l) \
@@ -157,7 +184,7 @@ class AdaptiveGIMP:
   def mark_ghost_and_T_junction(self):
     for l in reversed(range(self.level)):
       self._mark_ghost_and_T_junction(l)
-  
+
   @ti.func
   def get_finest_level_near_particle(self, p):
     f_l = -1 # finest-level near the particle
@@ -180,7 +207,7 @@ class AdaptiveGIMP:
     for p in range(self.n_particles):
       self.fl_p[p] = self.get_finest_level_near_particle(p)
       self.pid[self.fl_p[p]].append(p)
-  
+
   @ti.func
   def get_weight_stencil(self, trilinear_coordinates):
     __weight = ti.Matrix.zero(float, ti.static((3 ** self.dim)), ti.static(self.dim+1))
@@ -190,7 +217,7 @@ class AdaptiveGIMP:
         weight, g_weight = get_linear_weight(self.dim, self.radius, trilinear_coordinates, dI, cell_)
         __weight[(dI+cell_).dot(__conv), 0] += weight
         __weight[(dI+cell_).dot(__conv), 1:] += g_weight
-    
+
     return __weight, __conv
 
   @ti.kernel
@@ -204,7 +231,7 @@ class AdaptiveGIMP:
 
       # compute stress
       stress = -dt0 * (0.5**self.dim) / ((self.radius**self.dim) * dx) * get_stress(self.dim, self.F_p[p], self.mu, self.la)
-      
+
       __weight, __conv = self.get_weight_stencil(trilinear_coordinates)
 
       for dI in ti.static(ti.grouped(ti.ndrange(*((3, ) * self.dim)))):
@@ -213,7 +240,7 @@ class AdaptiveGIMP:
 
           self.ad_grid_m[l][base+dI] += weight * self.m_p[p]
           self.ad_grid_v[l][base+dI] += weight * (self.m_p[p] * self.v_p[p]) + stress @ g_weight
-    
+
   @ti.kernel
   def g2p(self, l : ti.template(), dt0 : ti.f32):
     for i in range(self.pid[l].length()):
@@ -233,7 +260,7 @@ class AdaptiveGIMP:
           weight, g_weight = tmp[0], tmp[1:]
           new_v += self.ad_grid_v[l][base+dI] * weight
           new_G += self.ad_grid_v[l][base+dI].outer_product(g_weight)
-        
+
       self.v_p[p] = new_v
       self.x_p[p] += dt0 * self.v_p[p] # advection
       self.F_p[p] = (ti.Matrix.identity(float, self.dim) + dt0 * (0.5**self.dim) / ((self.radius**self.dim) * dx) * new_G) @ self.F_p[p]
@@ -289,16 +316,18 @@ class AdaptiveGIMP:
     self.node_mask_grid.deactivate_all()
     for l in range(self.level):
       self.grid[l].deactivate_all()
-    
+
     if self.static_adaptivity:
       self.activate_cell_static()
     else:
       self.activate_cell_dynamic()
-    
+      self.culling_hierarchy_duplicate() # ensure the hierarchy will not be activated duplicately
+
     self.mark_activated()
     self.mark_ghost_and_T_junction()
-    
+
     self.level_mapping()
+
     for l in range(self.level):
       self.p2g(l, dt0)
 
@@ -307,7 +336,7 @@ class AdaptiveGIMP:
 
     for l in range(self.level):
         self.grid_op(l, dt0)
-    
+
     for l in range(self.level):
       if l != 0: self.grid_prolongation(l)
 

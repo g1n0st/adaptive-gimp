@@ -10,7 +10,7 @@ class GUI:
       self.canvas = self.window.get_canvas()
 
     @ti.kernel
-    def visualize_mask(self, simulator : ti.template()):
+    def visualize_mask(self, simulator : ti.template(), show_ghost : ti.i32, show_node : ti.i32):
 
       finest_size = simulator.coarsest_size * (2**(simulator.level-1))
       for i, j in ti.ndrange(self.res, self.res):
@@ -21,14 +21,14 @@ class GUI:
             self.bg_img[i, j] = ti.Vector([0.28, 0.68, 0.99])
             if i % scale == 0 or i % scale == scale-1 or j % scale == 0 or j % scale == scale-1:
               self.bg_img[i, j] = ti.Vector([0.18, 0.58, 0.88])
-          elif simulator.active_cell_mask[l][i // scale, j // scale] == GHOST: # ghost cell
+          elif simulator.active_cell_mask[l][i // scale, j // scale] == GHOST and show_ghost: # ghost cell
             self.bg_img[i, j] = ti.Vector([0, 0, 1.0])
             if i % scale == 0 or i % scale == scale-1 or j % scale == 0 or j % scale == scale-1:
               self.bg_img[i, j] = ti.Vector([0, 0, 0.77])
       
       for i, j in ti.ndrange(self.res, self.res):
         fscale = self.res // (finest_size)
-        if i % fscale == 0 and j % fscale == 0:
+        if i % fscale == 0 and j % fscale == 0 and show_node:
           if simulator.is_activated(simulator.level-1, [i // fscale, j // fscale]):
             for di, dj in ti.ndrange((-1, 2), (-1, 2)):
               if 0<=i+di < self.res and 0<=j+dj < self.res:
@@ -61,9 +61,10 @@ class GUI:
                 if i % scale == 0 or i % scale == scale-1 or j % scale == 0 or j % scale == scale-1:
                   self.bg_img[i, j] = ti.Vector([0.18, 0.58, 0.88])
 
-    def show(self, simulator):
-      self.visualize_mask(simulator)
-      # self.visualize_sparse(simulator, simulator.level-1)
+    def show(self, simulator, show_particles = True, show_ghost = True, show_node = True):
+      self.visualize_mask(simulator, show_ghost, show_node)
+      # self.visualize_sparse(simulator, 0)
       self.canvas.set_image(self.bg_img)
-      self.canvas.circles(simulator.x_p, radius=0.006, color=(0.93, 0.33, 0.23))
+      if show_particles:
+        self.canvas.circles(simulator.x_p, radius=0.005, color=(0.93, 0.33, 0.23))
       self.window.show()
