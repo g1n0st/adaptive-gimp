@@ -23,20 +23,20 @@ def init_p(simulator : ti.template()):
 
     simulator.F_p[i] = ti.Matrix.identity(ti.f32, 3)
     simulator.m_p[i] = simulator.p_mass
-    if all(0.1 <= xyz <= 0.9):
+    if all(0.05 <= xyz <= 0.95):
       simulator.g_p[i] = 0
-    elif all(0.03 <= xyz <= 0.97):
+    elif all(0.01 <= xyz <= 0.99):
       simulator.g_p[i] = 1
     else:
       simulator.g_p[i] = 2
 
 simulator = AdaptiveGIMP(3, 3, 16, 50000, init_p, None)
-gui = GUI3D()
+gui = GUI3D(simulator)
 
 frame = 0
 while frame < 5000:
   for i in range(1): simulator.substep(1e-4)
-  gui.show(simulator)
+  gui.show()
   frame += 1
 
 ti.profiler.print_kernel_profiler_info()
