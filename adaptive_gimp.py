@@ -52,6 +52,7 @@ class AdaptiveGIMP:
     self.v_p = ti.Vector.field(dim, ti.f32, shape=self.n_particles)
     self.F_p = ti.Matrix.field(dim, dim, ti.f32, shape=self.n_particles)
     self.m_p = ti.field(ti.f32, shape=self.n_particles)
+    self.c_p = ti.Vector.field(3, ti.f32, shape=self.n_particles) # particle color
     self.g_p = ti.field(ti.i32, shape=self.n_particles) # auxiliary data: prescribed grid level for particles
     self.fl_p = ti.field(ti.i32, shape=self.n_particles) # auxiliary data: finest level near particles
     self.level_block = ti.root.dense(ti.i, self.level)

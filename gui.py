@@ -66,5 +66,5 @@ class GUI:
       # self.visualize_sparse(simulator, 0)
       self.canvas.set_image(self.bg_img)
       if show_particles:
-        self.canvas.circles(simulator.x_p, radius=0.005, color=(0.93, 0.33, 0.23))
+        self.canvas.circles(simulator.x_p, radius=0.003, per_vertex_color=simulator.c_p)
       self.window.show()
