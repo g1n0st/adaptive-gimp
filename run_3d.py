@@ -6,9 +6,10 @@ from adaptive_gimp import AdaptiveGIMP
 import argparse
 
 parser = argparse.ArgumentParser()
+parser.add_argument('--arch', default='cuda')
 args = parser.parse_args()
 
-ti.init(arch=ti.cpu, kernel_profiler=True)
+ti.init(arch=getattr(ti, args.arch), kernel_profiler=True)
 
 @ti.kernel
 def init_p(simulator : ti.template()):

@@ -8,9 +8,10 @@ import time
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--case', type=int, default=0)
+parser.add_argument('--arch', default='cuda')
 args = parser.parse_args()
 
-ti.init(arch=ti.cpu)
+ti.init(arch=getattr(ti, args.arch))
 
 grid_initializer = [None, initialize_mask1, initialize_mask2, initialize_mask3, initialize_mask4, initialize_mask5]
 simulator = AdaptiveGIMP(dim = 2, 

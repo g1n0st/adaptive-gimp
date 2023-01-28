@@ -25,12 +25,13 @@ class AdaptiveGIMP:
     self.node_mask = ti.field(ti.i32)
     self.node_mask_block.place(self.node_mask)
 
-    self.leaf_size = 8
+    self.leaf_size = 4
     self.grid = []
     self.block = []
     self.cell_mask = []
     self.ad_grid_v = []
     self.ad_grid_m = []
+    self.pid = []
     for l in range(level):
       l_size = coarsest_size * (2**l)
       self.grid.append(ti.root.pointer(self.axis, (align_size(l_size//self.leaf_size+1, 4), ) * self.dim))
@@ -39,6 +40,9 @@ class AdaptiveGIMP:
       self.ad_grid_v.append(ti.Vector.field(self.dim, float))
       self.ad_grid_m.append(ti.field(float))
       self.block[l].place(self.cell_mask[l], self.ad_grid_v[l], self.ad_grid_m[l])
+
+      self.pid.append(ti.field(int))
+      self.grid[l].dynamic(ti.axes(self.dim), n_particles, chunk_size = 16 * (2**self.dim)).place(self.pid[l])
 
     # -------- particle data --------
     self.radius = 0.5 # Half-cell; this reflects what the radius is at the finest level of adaptivity
@@ -55,9 +59,6 @@ class AdaptiveGIMP:
     self.c_p = ti.Vector.field(3, ti.f32, shape=self.n_particles) # particle color
     self.g_p = ti.field(ti.i32, shape=self.n_particles) # auxiliary data: prescribed grid level for particles
     self.fl_p = ti.field(ti.i32, shape=self.n_particles) # auxiliary data: finest level near particles
-    self.level_block = ti.root.dense(ti.i, self.level)
-    self.pid = ti.field(int)
-    self.level_block.dynamic(ti.j, self.n_particles, chunk_size = 16 * (2**self.dim)).place(self.pid)
 
     particle_initializer(self)
     self.grid_initializer = grid_initializer
@@ -203,9 +204,15 @@ class AdaptiveGIMP:
 
   @ti.kernel
   def level_mapping(self):
+    ti.loop_config(block_dim=16)
     for p in range(self.n_particles):
       self.fl_p[p] = self.get_finest_level_near_particle(p)
-      self.pid[self.fl_p[p]].append(p)
+      for l in ti.static(range(self.level)):
+          if self.fl_p[p] == l:
+            dx = self.coarsest_dx / (2**l)
+            base = (self.x_p[p] / dx + 0.5).cast(int) - 1
+            base_pid = ti.rescale_index(self.ad_grid_m[l], self.pid[l].parent(2), base)
+            ti.append(self.pid[l].parent(), base_pid, p)
 
   @ti.func
   def get_weight_stencil(self, trilinear_coordinates):
@@ -221,8 +228,8 @@ class AdaptiveGIMP:
 
   @ti.kernel
   def p2g(self, l : ti.template(), dt0 : ti.f32):
-    for i in range(self.pid[l].length()):
-      p = self.pid[l, i]
+    for I in ti.grouped(self.pid[l]):
+      p = self.pid[l][I]
 
       dx = self.coarsest_dx / (2**l)
       base = (self.x_p[p] / dx + 0.5).cast(int) - 1
@@ -242,8 +249,8 @@ class AdaptiveGIMP:
 
   @ti.kernel
   def g2p(self, l : ti.template(), dt0 : ti.f32):
-    for i in range(self.pid[l].length()):
-      p = self.pid[l, i]
+    for I in ti.grouped(self.pid[l]):
+      p = self.pid[l][I]
 
       dx = self.coarsest_dx / (2**l)
       base = (self.x_p[p] / dx + 0.5).cast(int) - 1
@@ -311,7 +318,6 @@ class AdaptiveGIMP:
             self.ad_grid_v[l][I2+dI] += self.ad_grid_v[l0][I] * weight
 
   def substep(self, dt0):
-    self.level_block.deactivate_all()
     self.node_mask_grid.deactivate_all()
     for l in range(self.level):
       self.grid[l].deactivate_all()
