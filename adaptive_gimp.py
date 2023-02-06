@@ -55,6 +55,7 @@ class AdaptiveGIMP:
     self.x_p = ti.Vector.field(dim, ti.f32, shape=self.n_particles)
     self.v_p = ti.Vector.field(dim, ti.f32, shape=self.n_particles)
     self.F_p = ti.Matrix.field(dim, dim, ti.f32, shape=self.n_particles)
+    self.C_p = ti.Matrix.field(dim, dim, ti.f32, shape=self.n_particles) # affine in APIC
     self.m_p = ti.field(ti.f32, shape=self.n_particles)
     self.c_p = ti.Vector.field(3, ti.f32, shape=self.n_particles) # particle color
     self.g_p = ti.field(ti.i32, shape=self.n_particles) # auxiliary data: prescribed grid level for particles
@@ -243,9 +244,10 @@ class AdaptiveGIMP:
       for dI in ti.static(ti.grouped(ti.ndrange(*((3, ) * self.dim)))):
           tmp = __weight[dI.dot(__conv), :]
           weight, g_weight = tmp[0], tmp[1:]
+          dpos = dI.cast(float) - (trilinear_coordinates+1)
 
           self.ad_grid_m[l][base+dI] += weight * self.m_p[p]
-          self.ad_grid_v[l][base+dI] += weight * (self.m_p[p] * self.v_p[p]) + stress @ g_weight
+          self.ad_grid_v[l][base+dI] += weight * self.m_p[p] * (self.v_p[p] + self.C_p[p] @ dpos) + stress @ g_weight
 
   @ti.kernel
   def g2p(self, l : ti.template(), dt0 : ti.f32):
@@ -268,6 +270,7 @@ class AdaptiveGIMP:
           new_G += self.ad_grid_v[l][base+dI].outer_product(g_weight)
 
       self.v_p[p] = new_v
+      self.C_p[p] = new_G
       self.x_p[p] += dt0 * self.v_p[p] # advection
       self.F_p[p] = (ti.Matrix.identity(float, self.dim) + dt0 * (0.5**self.dim) / ((self.radius**self.dim) * dx) * new_G) @ self.F_p[p]
 
