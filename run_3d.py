@@ -2,6 +2,7 @@ import taichi as ti
 from utils import *
 from gui_3d import *
 from init import *
+from sdf import *
 from adaptive_gimp import AdaptiveGIMP
 import argparse
 
@@ -31,7 +32,7 @@ def init_p(simulator : ti.template()):
     else:
       simulator.g_p[i] = 2
 
-simulator = AdaptiveGIMP(3, 3, 16, 50000, init_p, None)
+simulator = AdaptiveGIMP(3, SDF(dim=3), 3, 16, 50000, init_p, None)
 gui = GUI3D(simulator)
 
 frame = 0

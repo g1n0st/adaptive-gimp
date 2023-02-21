@@ -6,12 +6,14 @@ ENABLE_AFFINE = True
 @ti.data_oriented
 class AdaptiveGIMP:
   def __init__(self, 
-               dim, 
+               dim,
+               sdf,
                level, coarsest_size,
                n_particles,
                particle_initializer, 
                grid_initializer = None,
                lag_force = None):
+    self.time = 0.0
     self.dim = dim
     # ----- adaptive grid data ------
     self.level = level
@@ -69,6 +71,8 @@ class AdaptiveGIMP:
     self.grid_initializer = grid_initializer
     self.static_adaptivity = (grid_initializer != None)
     self.lag_force = lag_force
+    self.sdf = sdf
+    self.friction = 0.0
 
   @ti.func
   def activate_cell(self, l : ti.template(), I):
@@ -287,14 +291,28 @@ class AdaptiveGIMP:
   @ti.kernel
   def grid_op(self, l : ti.template(), dt0 : ti.f32):
     l_size = self.coarsest_size * (2**l)
+    dx = self.coarsest_dx / (2**l)
     for I in ti.grouped(self.ad_grid_v[l]):
       if all(0 <= I <= l_size) and self.ad_grid_m[l][I] > 0 and self.is_activated(l, I): # only on real degree-of-freedom
-        self.ad_grid_v[l][I] /= self.ad_grid_m[l][I]
-        self.ad_grid_v[l][I] += self.gravity * dt0
+        vel = self.ad_grid_v[l][I]
+        vel /= self.ad_grid_m[l][I]
+        vel += self.gravity * dt0
+
+        # boundary condition
         for v in ti.static(range(self.dim)):
           if self._map(l, I)[v] < self.boundary_gap or \
              self._map(l, I)[v] > self.finest_size - self.boundary_gap:
-            self.ad_grid_v[l][I][v] = 0
+            vel[v] = 0
+
+          pos = (I + 0.5) * dx
+          fixed, inside, dotnv, diff_vel, n = self.sdf.check(pos, vel)
+          if inside:
+            if fixed: vel.fill(0.0)
+            else:
+              dotnv_frac = dotnv * (1.0 - self.friction)
+              vel += diff_vel * self.friction + n * dotnv_frac
+
+        self.ad_grid_v[l][I] = vel
 
   @ti.kernel
   def grid_restriction(self, l : ti.template()):
@@ -331,6 +349,7 @@ class AdaptiveGIMP:
             self.ad_grid_v[l][I2+dI] += self.ad_grid_v[l0][I] * weight
 
   def substep(self, dt0):
+    self.sdf.update(self.time)
     self.node_mask_grid.deactivate_all()
     for l in range(self.level):
       self.grid[l].deactivate_all()
@@ -363,3 +382,5 @@ class AdaptiveGIMP:
 
     for l in range(self.level):
       self.g2p(l, dt0)
+    
+    self.time += dt0
