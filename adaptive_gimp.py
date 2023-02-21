@@ -1,6 +1,8 @@
 import taichi as ti
 from utils import *
 
+ENABLE_AFFINE = True
+
 @ti.data_oriented
 class AdaptiveGIMP:
   def __init__(self, 
@@ -8,7 +10,8 @@ class AdaptiveGIMP:
                level, coarsest_size,
                n_particles,
                particle_initializer, 
-               grid_initializer = None):
+               grid_initializer = None,
+               lag_force = None):
     self.dim = dim
     # ----- adaptive grid data ------
     self.level = level
@@ -54,6 +57,7 @@ class AdaptiveGIMP:
 
     self.x_p = ti.Vector.field(dim, ti.f32, shape=self.n_particles)
     self.v_p = ti.Vector.field(dim, ti.f32, shape=self.n_particles)
+    self.f_p = ti.Vector.field(dim, ti.f32, shape=self.n_particles)
     self.F_p = ti.Matrix.field(dim, dim, ti.f32, shape=self.n_particles)
     self.C_p = ti.Matrix.field(dim, dim, ti.f32, shape=self.n_particles) # affine in APIC
     self.m_p = ti.field(ti.f32, shape=self.n_particles)
@@ -64,6 +68,7 @@ class AdaptiveGIMP:
     particle_initializer(self)
     self.grid_initializer = grid_initializer
     self.static_adaptivity = (grid_initializer != None)
+    self.lag_force = lag_force
 
   @ti.func
   def activate_cell(self, l : ti.template(), I):
@@ -236,8 +241,11 @@ class AdaptiveGIMP:
       base = (self.x_p[p] / dx + 0.5).cast(int) - 1
       trilinear_coordinates = self.x_p[p] / dx - float(base+1)
 
-      # compute stress
-      stress = -dt0 * (0.5**self.dim) / ((self.radius**self.dim) * dx) * get_stress(self.dim, self.F_p[p], self.mu, self.la)
+      stress = ti.Matrix.zero(float, self.dim, self.dim)
+      if ti.static(self.lag_force == None):
+        # compute stress
+        stress = -dt0 * (0.5**self.dim) / ((self.radius**self.dim) * dx) * get_stress(self.dim, self.F_p[p], self.mu, self.la)
+        self.f_p[p].fill(0.0)
 
       __weight, __conv = self.get_weight_stencil(trilinear_coordinates)
 
@@ -247,7 +255,7 @@ class AdaptiveGIMP:
           dpos = dI.cast(float) - (trilinear_coordinates+1)
 
           self.ad_grid_m[l][base+dI] += weight * self.m_p[p]
-          self.ad_grid_v[l][base+dI] += weight * self.m_p[p] * (self.v_p[p] + self.C_p[p] @ dpos) + stress @ g_weight
+          self.ad_grid_v[l][base+dI] += weight * self.m_p[p] * (self.v_p[p] + self.C_p[p] @ dpos) + stress @ g_weight + weight * self.f_p[p] * dt0
 
   @ti.kernel
   def g2p(self, l : ti.template(), dt0 : ti.f32):
@@ -270,9 +278,11 @@ class AdaptiveGIMP:
           new_G += self.ad_grid_v[l][base+dI].outer_product(g_weight)
 
       self.v_p[p] = new_v
-      self.C_p[p] = new_G
+      if ti.static(ENABLE_AFFINE):
+        self.C_p[p] = new_G
       self.x_p[p] += dt0 * self.v_p[p] # advection
-      self.F_p[p] = (ti.Matrix.identity(float, self.dim) + dt0 * (0.5**self.dim) / ((self.radius**self.dim) * dx) * new_G) @ self.F_p[p]
+      if ti.static(self.lag_force == None):
+        self.F_p[p] = (ti.Matrix.identity(float, self.dim) + dt0 * (0.5**self.dim) / ((self.radius**self.dim) * dx) * new_G) @ self.F_p[p]
 
   @ti.kernel
   def grid_op(self, l : ti.template(), dt0 : ti.f32):
@@ -335,6 +345,9 @@ class AdaptiveGIMP:
     self.mark_ghost_and_T_junction()
 
     self.level_mapping()
+
+    if self.lag_force != None:
+      self.lag_force(self)
 
     for l in range(self.level):
       self.p2g(l, dt0)
