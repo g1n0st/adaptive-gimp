@@ -43,3 +43,17 @@ def get_linear_weight(dim : ti.template(), radius, trilinear_coordinates, dI, ce
 
 def align_size(x, align):
   return (x+(align-1))&~(align-1)
+
+@ti.func
+def QR2(Mat): #2x2 mat, Gram–Schmidt Orthogonalization
+    c0 = ti.Vector([Mat[0,0],Mat[1,0]])
+    c1 = ti.Vector([Mat[0,1],Mat[1,1]])
+    r11 = c0.norm(1e-6)
+    q0 = c0/r11
+    r12 = c1.dot(q0)
+    q1 = c1 - r12 * q0
+    r22 = q1.norm(1e-6)
+    q1/=r22
+    Q = ti.Matrix.cols([q0,q1])
+    R = ti.Matrix([[r11,r12],[0,r22]])
+    return Q,R

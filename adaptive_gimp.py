@@ -1,7 +1,7 @@
 import taichi as ti
 from utils import *
 
-ENABLE_AFFINE = True
+ENABLE_AFFINE = False
 
 @ti.data_oriented
 class AdaptiveGIMP:
@@ -52,7 +52,7 @@ class AdaptiveGIMP:
     # -------- particle data --------
     self.radius = 0.5 # Half-cell; this reflects what the radius is at the finest level of adaptivity
     self.p_mass = 1.0
-    self.gravity = ti.Vector([-100.0 if _ == 1 else 0.0 for _ in range(dim)])
+    self.gravity = ti.Vector([-9.8 if _ == 1 else 0.0 for _ in range(dim)])
     self.n_particles = n_particles
     E, nu = 5e3, 0.2  # Young's modulus and Poisson's ratio
     self.mu, self.la = E / (2 * (1 + nu)), E * nu / ((1 + nu) * (1 - 2 * nu))  # Lame parameters

@@ -43,8 +43,8 @@ class SDF:
 
 @ti.data_oriented
 class HandlerSDF(SDF):
-    def __init__(self, pos, sphere_radius = 0.013):
-        super().__init__(fixed=True)
+    def __init__(self, dim, pos, sphere_radius = 0.013):
+        super().__init__(dim, fixed=True)
         self.sphere_pos = ti.Vector.field(self.dim, float, shape=pos.shape[0])
         self.sphere_pos.from_numpy(pos)
         self.sphere_radius = sphere_radius
