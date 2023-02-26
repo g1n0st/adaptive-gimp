@@ -304,13 +304,13 @@ class AdaptiveGIMP:
              self._map(l, I)[v] > self.finest_size - self.boundary_gap:
             vel[v] = 0
 
-          pos = (I + 0.5) * dx
-          fixed, inside, dotnv, diff_vel, n = self.sdf.check(pos, vel)
-          if inside:
-            if fixed: vel.fill(0.0)
-            else:
-              dotnv_frac = dotnv * (1.0 - self.friction)
-              vel += diff_vel * self.friction + n * dotnv_frac
+        pos = (I + 0.5) * dx
+        fixed, inside, dotnv, diff_vel, n = self.sdf.check(pos, vel)
+        if inside:
+          if fixed: vel.fill(0.0)
+          else:
+            dotnv_frac = dotnv * (1.0 - self.friction)
+            vel += diff_vel * self.friction + n * dotnv_frac
 
         self.ad_grid_v[l][I] = vel
 
