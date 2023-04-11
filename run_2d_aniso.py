@@ -13,12 +13,11 @@ ti.init(arch = ti.gpu)
 dt = 4.0e-5
 
 # Material Parameters
-E = 5000 # stretch
+E = 10000 # stretch
 
-'''
-gamma = 500 # shear
-k = 1000 # normal
-'''
+# gamma = 500 # shear
+# k = 1000 # normal
+
 gamma, k = 1e-5, 1e-5
 
 # number of lines
@@ -28,7 +27,7 @@ dlx = 0.009
 
 start_pos = ti.Vector([0.2, 0.5])
 
-n_type2 = 200
+n_type2 = 50
 n_type3 = n_type2 - 1
 
 #line length
@@ -53,7 +52,7 @@ def initialize(simulator : ti.template()):
     for i in range(n_type2):
         sq = i // n_type2
         simulator.x_p[i] = ti.Vector([start_pos[0]+ (i- sq* n_type2) * sl, start_pos[1] + sq* dlx])
-        simulator.v_p[i] = ti.Matrix([0, 0])
+        simulator.v_p[i] = ti.Matrix([0, -30.0])
         simulator.F_p[i] = ti.Matrix.identity(ti.f32, 2)
         simulator.m_p[i] = simulator.p_mass
         simulator.g_p[i] = -1
@@ -62,10 +61,11 @@ def initialize(simulator : ti.template()):
     for i in range(n_type3):
         l, n = GetType2FromType3(i)
         simulator.x_p[i+n_type2] = 0.5*(simulator.x_p[l] + simulator.x_p[n])
-        simulator.v_p[i+n_type2] = ti.Matrix([0, 0])
+        simulator.v_p[i+n_type2] = ti.Matrix([0, -30.0])
         simulator.F_p[i+n_type2] = ti.Matrix.identity(ti.f32, 2)
         simulator.m_p[i+n_type2] = simulator.p_mass
         simulator.g_p[i+n_type2] = -1
+        simulator.c_p[i+n_type2] = ti.Vector([0.23, 0.33, 0.93])
         
 
         F[i] = ti.Matrix([[1.0, 0.0],[0.0, 1.0]])
@@ -92,14 +92,26 @@ def get_force(solver : ti.template()):
         solver.f_p[l] += dphi_dF @ Dp_inv_c0
         solver.f_p[n] -= dphi_dF @ Dp_inv_c0
 
+@ti.func
+def init_grid(simulator, I):
+  sz = simulator.finest_size
+  L = -1
+  if I[0] < sz / 2:
+    L = 0
+    simulator.activate_cell(0, I)
+  else: 
+    L = 2
+    simulator.activate_cell(2, I)
+  return L
+
 simulator = AdaptiveGIMP(dim = 2, 
-                         level = 1,
-                         sdf = HandlerSDF(2, np.array([[0.2, 0.5], [0.8, 0.5]], dtype=np.float32), sphere_radius = 0.01),
+                         level = 3,
+                         sdf = HandlerSDF(2, np.array([[0.2, 0.5], [0.8, 0.5]], dtype=np.float32), sphere_radius = 0.03),
                          lag_force = get_force,
-                         coarsest_size = 256, 
+                         coarsest_size = 64, 
                          n_particles = N23, 
                          particle_initializer = initialize, 
-                         grid_initializer = initialize_mask1)
+                         grid_initializer = init_grid)
 
 
 @ti.kernel
@@ -111,7 +123,7 @@ def update_particle_state(solver : ti.template()):
 
         dp1 = solver.x_p[n] - solver.x_p[l]
         dp2 = ti.Vector([d[p][0,1],d[p][1,1]])
-        # dp2 += dt * C3[p]@dp2
+        dp2 += dt * solver.C_p[p+n_type2]@dp2
         d[p] = ti.Matrix.cols([dp1,dp2])
         F[p] = d[p] @ D_inv[p]
 
@@ -146,20 +158,46 @@ def return_mapping():
         F[p] = Q@R
         d[p] = F[p]@D_inv[p].inverse()
 
+@ti.kernel
+def get_angle_momentum(solver : ti.template()):
+    for p in range(n_type3):
+        angle_m = ti.Vector([0.0, 0.0])
+        l, n = GetType2FromType3(p)
+        c1 = 3.0
+        c2 = 1.0
+        c3 = 300.0
+        angle_m += ((solver.x_p[l] - solver.x_p[p+n_type2])*c1).cross((solver.m_p[l]*c2) * (solver.v_p[l]*c3))
+        val = angle_m.norm()
+        val_ = ti.min(val, 1.0)
+        if solver.fl_p[p+n_type2] == 0:
+          solver.c_p[p+n_type2] = ti.Vector([val_, 0, 0])
+        else:
+          solver.c_p[p+n_type2] = ti.Vector([0, 0, val_])
+
+def TRANS(x):
+  a = (x[:, 0] * 255).astype(int)
+  b = (x[:, 1] * 255).astype(int)
+  c = (x[:, 2] * 255).astype(int)
+  return a * 256 * 256 + b * 256 + c
 
 def main():
-    gui = ti.GUI("Cloth2D", (1024, 1024))
-    while not gui.get_event(ti.GUI.ESCAPE, ti.GUI.EXIT):
-        for _ in range(50):
+    gui = ti.GUI("Cloth2D", (2048, 2048))
+    # gui = GUI(res=2048)
+    while True:
+        for _ in range(1):
             simulator.substep(dt)
             update_particle_state(simulator)
             return_mapping()
+            get_angle_momentum(simulator)
 
-        gui.clear(0x112F41)
-
-        x2_ny = simulator.x_p.to_numpy()[:n_type2, :]
-        gui.circles(x2_ny[0 : n_type2], radius=2, color= 8123377)
+        # gui.clear(0x112F41)
+        x2 = simulator.x_p.to_numpy()[:n_type2, :]
+        x3 = simulator.x_p.to_numpy()[n_type2:, :]
+        c3 = TRANS(simulator.c_p.to_numpy()[n_type2:, :])
+        gui.lines(begin=x2[:-1, :], end = x2[1:, :], radius=2, color= c3)
+        gui.circles(x2, radius=2, color=0xFF88AD)
         gui.show()
+        # gui.show(simulator)
 
 if __name__ == "__main__":
     main()

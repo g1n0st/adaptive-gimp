@@ -124,3 +124,32 @@ class MixedSDF(SDF):
     def log(self, gui):
         self.sdf_a.log(gui)
         self.sdf_b.log(gui)
+
+@ti.data_oriented
+class SphereSDF(SDF):
+    def __init__(self,
+        dim,
+        pos,
+        radius = 0.1):
+        super().__init__(dim, fixed=False)
+        self.sphere_pos = ti.Vector.field(3, float, shape=1)
+        self.sphere_pos[0] = pos
+        self.sphere_radius = radius
+
+    def log(self, gui):
+        pass
+
+    @ti.kernel
+    def update(self, t : ti.f32):
+        pass
+
+    @ti.func
+    def dist(self, pos):
+        return (pos - self.sphere_pos[0]).norm(1e-10) - self.sphere_radius
+
+    @ti.func
+    def normal(self, pos):
+        return (pos - self.sphere_pos[0]).normalized(1e-10)
+
+    def render(self, scene):
+        scene.particles(self.sphere_pos, self.sphere_radius - 0.02, color = (0, 0, 1))

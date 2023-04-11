@@ -56,8 +56,9 @@ class GUI3D:
 
       self.scene.ambient_light((0, 0, 0))
 
-      self.scene.particles(self.simulator.x_p, color = (0.5, 0.5, 0.5), radius=0.02)
+      self.scene.particles(self.simulator.x_p, per_vertex_color = self.simulator.c_p, radius=0.005)
       self.scene.mesh(self.bound_box, self.floor, color=(0.0, 0.0, 0.9), two_sided=True)
+      self.simulator.sdf.render(self.scene)
       # self.draw_lines()
       # self.scene.lines(self.line_vertex, width = 0.001, vertex_count = self.line_count[None], color=(1.0, 1.0, 1.0))
 
