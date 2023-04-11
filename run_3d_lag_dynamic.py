@@ -10,7 +10,7 @@ import numpy as np
 
 ti.init(arch = ti.gpu)
 
-dt = 4.0e-5
+dt = 1e-4
 
 # Material Parameters
 E, nu = 5e5, 0.0

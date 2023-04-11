@@ -10,7 +10,7 @@ import numpy as np
 
 ti.init(arch = ti.gpu)
 
-dt = 4.0e-5
+dt = 1e-4
 
 # Material Parameters
 E = 10000 # stretch
@@ -184,7 +184,7 @@ def main():
     gui = ti.GUI("Cloth2D", (2048, 2048))
     # gui = GUI(res=2048)
     while True:
-        for _ in range(1):
+        for _ in range(10):
             simulator.substep(dt)
             update_particle_state(simulator)
             return_mapping()

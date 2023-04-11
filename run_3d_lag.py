@@ -10,7 +10,7 @@ import numpy as np
 
 ti.init(arch = ti.gpu)
 
-dt = 4.0e-5
+dt = 1e-4
 
 # Material Parameters
 E, nu = 5e5, 0.0
@@ -22,7 +22,6 @@ start_pos = ti.Vector([0.3, 0.3, 0.4])
 L = 30
 NCUBE = np.array([L] * 3)
 NV = L**3
-NC = 5 * np.product(NCUBE - 1)
 dx = 1 / (NCUBE.max() - 1)
 
 F_verts = ti.Vector.field(4, dtype=ti.i32, shape=NC)
