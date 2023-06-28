@@ -30,7 +30,7 @@ class AdaptiveGIMP:
     self.node_mask = ti.field(ti.i32)
     self.node_mask_block.place(self.node_mask)
 
-    self.leaf_size = 4
+    self.leaf_size = 16
     self.grid = []
     self.block = []
     self.cell_mask = []
@@ -39,7 +39,7 @@ class AdaptiveGIMP:
     self.pid = []
     for l in range(level):
       l_size = coarsest_size * (2**l)
-      self.grid.append(ti.root.pointer(self.axis, (align_size(l_size//self.leaf_size+1, 4), ) * self.dim))
+      self.grid.append(ti.root.pointer(self.axis, (align_size(l_size//self.leaf_size+1, 16), ) * self.dim))
       self.block.append(self.grid[l].bitmasked(self.axis, self.leaf_size))
       self.cell_mask.append(ti.field(int))
       self.ad_grid_v.append(ti.Vector.field(self.dim, float))
@@ -52,7 +52,7 @@ class AdaptiveGIMP:
     # -------- particle data --------
     self.radius = 0.5 # Half-cell; this reflects what the radius is at the finest level of adaptivity
     self.p_mass = 1.0
-    self.gravity = ti.Vector([-98.0 if _ == 1 else 0.0 for _ in range(dim)])
+    self.gravity = ti.Vector([-9.8 if _ == 1 else 0.0 for _ in range(dim)])
     self.n_particles = n_particles
     E, nu = 5e3, 0.2  # Young's modulus and Poisson's ratio
     self.mu, self.la = E / (2 * (1 + nu)), E * nu / ((1 + nu) * (1 - 2 * nu))  # Lame parameters

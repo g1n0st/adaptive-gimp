@@ -1,4 +1,7 @@
 import taichi as ti
+import pymeshlab
+
+import os
 
 vec2 = ti.math.ivec2
 
@@ -57,3 +60,15 @@ def QR2(Mat): #2x2 mat, Gram–Schmidt Orthogonalization
     Q = ti.Matrix.cols([q0,q1])
     R = ti.Matrix([[r11,r12],[0,r22]])
     return Q,R
+
+class MeshExporter:
+    def __init__(self, filename):
+        self.path = os.path.dirname(filename)
+        self.filename = filename
+        os.makedirs(self.path, exist_ok=True)
+
+    def export(self, pos, indices, frame):
+        ms = pymeshlab.MeshSet()
+        ms.add_mesh(pymeshlab.Mesh(vertex_matrix=pos, 
+                                   face_matrix=indices))
+        ms.save_current_mesh(f"{self.filename}{frame:06d}.obj")

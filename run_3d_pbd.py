@@ -129,8 +129,8 @@ def visualize(simulator : ti.template()):
         else:
             simulator.c_p[p] = ti.Vector([0.93, 0.33, 0.23])
 
-sdf = SphereSDF(dim=3, radius = 0.1, pos = ti.Vector([0.5, 0.15, 0.5]))
-# sdf = HandlerSDF(dim=3, pos=np.array([[0.3, 0.5, 0.3], [0.3, 0.5, 0.7], [0.7, 0.5, 0.3], [0.7, 0.5, 0.7]], dtype=np.float32), sphere_radius = 0.1)
+# sdf = SphereSDF(dim=3, radius = 0.1, pos = ti.Vector([0.5, 0.15, 0.5]))
+sdf = HandlerSDF(dim=3, pos=np.array([[0.3, 0.5, 0.3], [0.3, 0.5, 0.7], [0.7, 0.5, 0.3], [0.7, 0.5, 0.7]], dtype=np.float32), sphere_radius = 0.1)
 
 simulator = AdaptiveGIMP(dim = 3, 
                          level = 2,
